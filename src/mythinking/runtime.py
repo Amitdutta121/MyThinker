@@ -5,6 +5,7 @@ from pathlib import Path
 from mythinking.agents.evidence_analyst import EvidenceAnalyst
 from mythinking.agents.explorer import Explorer
 from mythinking.agents.frame_analyst import FrameAnalyst
+from mythinking.agents.planner import Planner
 from mythinking.agents.researcher import Researcher
 from mythinking.agents.supervisor import SupervisorAgent
 from mythinking.agents.synthesizer import Synthesizer
@@ -38,6 +39,7 @@ class ThinkingRuntime:
         explorer: Explorer | None = None,
         synthesizer: Synthesizer | None = None,
         researcher: Researcher | None = None,
+        planner: Planner | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.repository = repository or StateRepository(self.settings.state_database_path)
@@ -75,6 +77,10 @@ class ThinkingRuntime:
             self.prompt_registry,
             create_chat_model(self.settings),
         )
+        self.planner = planner or Planner(
+            self.prompt_registry,
+            create_chat_model(self.settings),
+        )
 
     def run_turn(self, user_message: str, project_id: str | None = None) -> AssistantTurn:
         message = user_message.strip()
@@ -99,6 +105,7 @@ class ThinkingRuntime:
                 explorer=self.explorer,
                 synthesizer=self.synthesizer,
                 researcher=self.researcher,
+                planner=self.planner,
                 checkpointer=checkpointer,
             )
             result = graph.invoke(

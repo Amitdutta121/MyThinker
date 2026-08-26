@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from mythinking.evidence import format_evidence_ledger
 from mythinking.exploration import format_branch_alternatives
+from mythinking.planning import format_next_actions
 from mythinking.prompts import PromptRegistry
 from mythinking.research import format_open_research_tasks
 from mythinking.state import (
@@ -16,6 +17,7 @@ from mythinking.state import (
     DriftStatus,
     ExplorerAnalysis,
     FrameAnalysis,
+    PlannerAnalysis,
     ProjectState,
     ResearcherAnalysis,
     SynthesizerAnalysis,
@@ -57,6 +59,7 @@ class SupervisorAgent:
         exploration_analysis: ExplorerAnalysis | None = None,
         synthesis: SynthesizerAnalysis | None = None,
         research_analysis: ResearcherAnalysis | None = None,
+        planner_analysis: PlannerAnalysis | None = None,
     ) -> AssistantTurn:
         prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
         rendered = prompt.render(
@@ -94,6 +97,12 @@ class SupervisorAgent:
                     if research_analysis is not None
                     else "null"
                 ),
+                "next_actions_plan": format_next_actions(project_state),
+                "planner_analysis": (
+                    planner_analysis.model_dump_json(indent=2)
+                    if planner_analysis is not None
+                    else "null"
+                ),
             }
         )
         structured_model = self.model.with_structured_output(SupervisorReply)
@@ -127,6 +136,13 @@ class SupervisorAgent:
             and research_analysis.answer.strip()
         ):
             question = "Does this research answer hold up, or should we keep digging?"
+        if (
+            project_state.current_mode is ThinkingMode.DECIDE
+            and not question
+            and planner_analysis is not None
+            and planner_analysis.next_actions_to_add
+        ):
+            question = "Does this next action work, or should we plan something else?"
         message = reply.message.strip()
         if question and question not in message:
             message = f"{message}\n\n{question}"

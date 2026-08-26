@@ -22,7 +22,9 @@ from mythinking.state import (
     ExplorerAnalysis,
     FrameAnalysis,
     IdeaBranch,
+    NextActionDraft,
     NorthStarUpdate,
+    PlannerAnalysis,
     ProjectState,
     ResearcherAnalysis,
     ResearchTask,
@@ -116,6 +118,18 @@ class StubResearcher:
         return self.analysis
 
 
+class StubPlanner:
+    """Deterministic stand-in that proposes no next actions unless configured to."""
+
+    def __init__(self, analysis: PlannerAnalysis | None = None) -> None:
+        self.analysis = analysis or PlannerAnalysis()
+        self.calls: list[tuple[str, str]] = []
+
+    def analyze(self, project_state: ProjectState, user_message: str) -> PlannerAnalysis:
+        self.calls.append((project_state.project_id, user_message))
+        return self.analysis
+
+
 class RecordingSupervisor:
     def __init__(self) -> None:
         self.calls: list[
@@ -129,6 +143,7 @@ class RecordingSupervisor:
                 ExplorerAnalysis | None,
                 SynthesizerAnalysis | None,
                 ResearcherAnalysis | None,
+                PlannerAnalysis | None,
             ]
         ] = []
 
@@ -142,6 +157,7 @@ class RecordingSupervisor:
         exploration_analysis: ExplorerAnalysis | None = None,
         synthesis: SynthesizerAnalysis | None = None,
         research_analysis: ResearcherAnalysis | None = None,
+        planner_analysis: PlannerAnalysis | None = None,
     ) -> AssistantTurn:
         self.calls.append(
             (
@@ -154,6 +170,7 @@ class RecordingSupervisor:
                 exploration_analysis,
                 synthesis,
                 research_analysis,
+                planner_analysis,
             )
         )
         question = frame_analysis.recommended_question if frame_analysis else ""
@@ -177,6 +194,7 @@ def _build_runtime(
     explorer: StubExplorer | None = None,
     synthesizer: StubSynthesizer | None = None,
     researcher: StubResearcher | None = None,
+    planner: StubPlanner | None = None,
 ) -> ThinkingRuntime:
     settings = Settings(
         _env_file=None,
@@ -194,6 +212,7 @@ def _build_runtime(
         explorer=explorer or StubExplorer(),
         synthesizer=synthesizer or StubSynthesizer(),
         researcher=researcher or StubResearcher(),
+        planner=planner or StubPlanner(),
     )
 
 
@@ -633,6 +652,51 @@ def test_run_turn_answers_scoped_research_request_and_resolves_task(tmp_path: Pa
     assert len(frame_analyst.calls) == 1
     assert len(saved.evidence) == 1
     assert saved.research_tasks[0].status is ResearchTaskStatus.ANSWERED
+
+
+def test_run_turn_plans_a_next_action_on_explicit_planning_request(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    planner = StubPlanner(
+        PlannerAnalysis(
+            next_actions_to_add=[
+                NextActionDraft(description="Draft the first newsletter issue", time_box_minutes=30)
+            ]
+        )
+    )
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+        planner=planner,
+    )
+    seed_turn = runtime.run_turn(
+        "I need a better way to keep product idea notes focused for solo founders."
+    )
+
+    turn = runtime.run_turn(
+        "What should I do next?",
+        project_id=seed_turn.project_id,
+    )
+    saved = runtime.get_project_state(seed_turn.project_id)
+
+    assert planner.calls
+    assert turn.mode is ThinkingMode.DECIDE
+    assert saved is not None
+    assert len(frame_analyst.calls) == 1
+    assert [action.description for action in saved.next_actions] == [
+        "Draft the first newsletter issue"
+    ]
 
 
 def test_get_project_state_returns_none_for_unknown_project(tmp_path: Path) -> None:

@@ -89,6 +89,11 @@ class ResearchTrigger(StrEnum):
     EXPLICIT_REQUEST = "explicit_request"
 
 
+class PlanTrigger(StrEnum):
+    NONE = "none"
+    EXPLICIT_REQUEST = "explicit_request"
+
+
 class NorthStar(BaseModel):
     """The compact goal representation kept visible throughout a project."""
 
@@ -271,6 +276,30 @@ class ResearcherAnalysis(BaseModel):
     task_resolved: bool = False
 
 
+class NextActionDraft(BaseModel):
+    """Structured next-action candidate before it is merged into persisted state."""
+
+    description: str
+    success_signal: str = ""
+    failure_signal: str = ""
+    time_box_minutes: int = Field(default=30, ge=1)
+    implementation_intention: str = ""
+
+
+class PlanIntent(BaseModel):
+    """Deterministic classification of an explicit request to plan the next action."""
+
+    trigger: PlanTrigger = PlanTrigger.NONE
+    matched_text: str = ""
+
+
+class PlannerAnalysis(BaseModel):
+    """Structured next-action plan used by the M6b graph."""
+
+    summary: str = ""
+    next_actions_to_add: list[NextActionDraft] = Field(default_factory=list)
+
+
 class DriftAssessment(BaseModel):
     """Drift classification for the current turn, deterministic or model-resolved."""
 
@@ -357,4 +386,6 @@ class SessionGraphState(BaseModel):
     synthesis: SynthesizerAnalysis | None = None
     research_intent: ResearchIntent | None = None
     research_analysis: ResearcherAnalysis | None = None
+    plan_intent: PlanIntent | None = None
+    planner_analysis: PlannerAnalysis | None = None
     assistant_turn: AssistantTurn | None = None

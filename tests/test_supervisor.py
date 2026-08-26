@@ -12,6 +12,9 @@ from mythinking.state import (
     EvidenceItem,
     EvidenceKind,
     IdeaBranch,
+    NextAction,
+    NextActionDraft,
+    PlannerAnalysis,
     ProjectState,
     ResearcherAnalysis,
     ResearchTask,
@@ -189,4 +192,38 @@ def test_supervisor_adds_default_research_question_when_model_omits_one() -> Non
     )
 
     assert reply.question == "Does this research answer hold up, or should we keep digging?"
+    assert reply.question in reply.message
+
+
+def test_supervisor_renders_the_next_actions_plan_into_the_prompt() -> None:
+    model = FakeModel({"message": "Noted.", "question": ""})
+    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
+    project_state.next_actions = [
+        NextAction(description="Draft the first newsletter issue", time_box_minutes=30)
+    ]
+
+    agent.respond(project_state, "What have we already planned?")
+
+    rendered = model.structured_model.rendered_prompt.lower()
+    assert "draft the first newsletter issue" in rendered
+
+
+def test_supervisor_adds_default_decide_question_when_model_omits_one() -> None:
+    model = FakeModel({"message": "Here is a next step.", "question": ""})
+    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    project_state = ProjectState(current_mode=ThinkingMode.DECIDE)
+    planner_analysis = PlannerAnalysis(
+        next_actions_to_add=[
+            NextActionDraft(description="Draft the first newsletter issue", time_box_minutes=30)
+        ]
+    )
+
+    reply = agent.respond(
+        project_state,
+        "What should I do next?",
+        planner_analysis=planner_analysis,
+    )
+
+    assert reply.question == "Does this next action work, or should we plan something else?"
     assert reply.question in reply.message

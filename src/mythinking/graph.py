@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from mythinking.agents.evidence_analyst import EvidenceAnalyst
 from mythinking.agents.explorer import Explorer
 from mythinking.agents.frame_analyst import FrameAnalyst
+from mythinking.agents.planner import Planner
 from mythinking.agents.researcher import Researcher
 from mythinking.agents.supervisor import SupervisorAgent
 from mythinking.agents.synthesizer import Synthesizer
@@ -16,6 +17,7 @@ from mythinking.drift import DriftDetector, DriftJudge, DriftResolver
 from mythinking.evidence import EvidenceLedger
 from mythinking.exploration import ConvergenceService, ExplorationManager, ExplorationRouter
 from mythinking.persistence import StateRepository
+from mythinking.planning import PlannerRouter, PlanningService
 from mythinking.research import ResearchImporter, ResearchRouter
 from mythinking.state import (
     Assumption,
@@ -25,6 +27,8 @@ from mythinking.state import (
     ExplorationIntent,
     FrameAnalysis,
     IntentAction,
+    PlanIntent,
+    PlanTrigger,
     ProjectState,
     ResearchIntent,
     ResearchTask,
@@ -53,6 +57,9 @@ def build_thinking_graph(
     researcher: Researcher | None = None,
     research_router: ResearchRouter | None = None,
     research_importer: ResearchImporter | None = None,
+    planner: Planner | None = None,
+    planner_router: PlannerRouter | None = None,
+    planning_service: PlanningService | None = None,
     checkpointer: Any = None,
 ):
     workflow = StateGraph(SessionGraphState)
@@ -65,6 +72,8 @@ def build_thinking_graph(
     convergence_service = convergence_service or ConvergenceService()
     research_router = research_router or ResearchRouter()
     research_importer = research_importer or ResearchImporter()
+    planner_router = planner_router or PlannerRouter()
+    planning_service = planning_service or PlanningService()
 
     workflow.add_node("capture", capture_node)
     workflow.add_node("handle_branch_command", _branch_command_node(branch_switcher))
@@ -73,6 +82,8 @@ def build_thinking_graph(
     workflow.add_node("converge", _converge_node(synthesizer, convergence_service))
     workflow.add_node("route_research", _route_research_node(research_router))
     workflow.add_node("research", _research_node(researcher, research_importer))
+    workflow.add_node("route_planning", _route_planning_node(planner_router))
+    workflow.add_node("plan", _plan_node(planner, planning_service))
     workflow.add_node("frame", _frame_node(frame_analyst))
     workflow.add_node("detect_drift", _drift_node(drift_resolver, branch_manager))
     workflow.add_node("extract_evidence", _evidence_node(evidence_analyst, evidence_ledger))
@@ -97,9 +108,15 @@ def build_thinking_graph(
     workflow.add_conditional_edges(
         "route_research",
         _route_after_research_intent,
-        {"research": "research", "none": "frame"},
+        {"research": "research", "none": "route_planning"},
     )
     workflow.add_edge("research", "choose_mode")
+    workflow.add_conditional_edges(
+        "route_planning",
+        _route_after_plan_intent,
+        {"plan": "plan", "none": "frame"},
+    )
+    workflow.add_edge("plan", "choose_mode")
     workflow.add_edge("frame", "detect_drift")
     workflow.add_edge("detect_drift", "extract_evidence")
     workflow.add_edge("extract_evidence", "choose_mode")
@@ -135,6 +152,7 @@ def choose_mode_node(state: SessionGraphState) -> dict[str, ProjectState]:
         state.drift_assessment,
         state.exploration_intent,
         state.research_intent,
+        state.plan_intent,
     )
     return {"project_state": project_state}
 
@@ -150,6 +168,7 @@ def _respond_node(supervisor: SupervisorAgent):
             state.exploration_analysis,
             state.synthesis,
             state.research_analysis,
+            state.planner_analysis,
         )
         return {"assistant_turn": assistant_turn}
 
@@ -235,6 +254,32 @@ def _find_research_task(project_state: ProjectState, research_task_id: str) -> R
     )
 
 
+def _route_planning_node(planner_router: PlannerRouter):
+    def run(state: SessionGraphState) -> dict[str, PlanIntent]:
+        intent = planner_router.detect(state.project_state, state.user_message)
+        return {"plan_intent": intent}
+
+    return run
+
+
+def _route_after_plan_intent(state: SessionGraphState) -> str:
+    intent = state.plan_intent
+    if intent is not None and intent.trigger is PlanTrigger.EXPLICIT_REQUEST:
+        return "plan"
+    return "none"
+
+
+def _plan_node(planner: Planner | None, planning_service: PlanningService):
+    def run(state: SessionGraphState) -> dict[str, Any]:
+        if planner is None:
+            return {}
+        analysis = planner.analyze(state.project_state, state.user_message)
+        project_state = planning_service.merge(state.project_state, analysis)
+        return {"planner_analysis": analysis, "project_state": project_state}
+
+    return run
+
+
 def _branch_command_node(branch_switcher: BranchSwitcher):
     def run(state: SessionGraphState) -> dict[str, Any]:
         command = branch_switcher.detect(state.project_state, state.user_message)
@@ -298,6 +343,7 @@ def choose_mode(
     drift_assessment: DriftAssessment | None = None,
     exploration_intent: ExplorationIntent | None = None,
     research_intent: ResearchIntent | None = None,
+    plan_intent: PlanIntent | None = None,
 ) -> ThinkingMode:
     if drift_assessment and drift_assessment.status is DriftStatus.DRIFTED:
         return ThinkingMode.CHALLENGE
@@ -308,6 +354,8 @@ def choose_mode(
             return ThinkingMode.CONVERGE
     if research_intent is not None and research_intent.trigger is ResearchTrigger.EXPLICIT_REQUEST:
         return ThinkingMode.RESEARCH
+    if plan_intent is not None and plan_intent.trigger is PlanTrigger.EXPLICIT_REQUEST:
+        return ThinkingMode.DECIDE
 
     north_star = project_state.north_star
     missing_core_frame = any(

@@ -23,7 +23,11 @@ from mythinking.state import (
     FrameAnalysis,
     IdeaBranch,
     IntentAction,
+    NextActionDraft,
     NorthStarUpdate,
+    PlanIntent,
+    PlannerAnalysis,
+    PlanTrigger,
     ProjectState,
     ResearcherAnalysis,
     ResearchIntent,
@@ -58,6 +62,7 @@ class FakeSupervisor:
                 ExplorerAnalysis | None,
                 SynthesizerAnalysis | None,
                 ResearcherAnalysis | None,
+                PlannerAnalysis | None,
             ]
         ] = []
 
@@ -71,6 +76,7 @@ class FakeSupervisor:
         exploration_analysis: ExplorerAnalysis | None = None,
         synthesis: SynthesizerAnalysis | None = None,
         research_analysis: ResearcherAnalysis | None = None,
+        planner_analysis: PlannerAnalysis | None = None,
     ) -> AssistantTurn:
         self.calls.append(
             (
@@ -82,6 +88,7 @@ class FakeSupervisor:
                 exploration_analysis,
                 synthesis,
                 research_analysis,
+                planner_analysis,
             )
         )
         question = frame_analysis.recommended_question if frame_analysis else ""
@@ -124,6 +131,21 @@ def test_choose_mode_returns_research_for_an_explicit_research_intent() -> None:
     )
 
     assert mode is ThinkingMode.RESEARCH
+
+
+def test_choose_mode_returns_decide_for_an_explicit_plan_intent() -> None:
+    project_state = ProjectState()
+
+    mode = choose_mode(
+        project_state,
+        FrameAnalysis(),
+        None,
+        None,
+        None,
+        PlanIntent(trigger=PlanTrigger.EXPLICIT_REQUEST),
+    )
+
+    assert mode is ThinkingMode.DECIDE
 
 
 def test_choose_mode_returns_challenge_when_drift_is_detected() -> None:
@@ -701,3 +723,73 @@ def test_build_thinking_graph_skips_research_without_a_researcher(
     assert result.research_analysis is None
     assert result.project_state.evidence == []
     assert result.project_state.current_mode is ThinkingMode.RESEARCH
+
+
+class FakePlanner:
+    def __init__(self, analysis: PlannerAnalysis) -> None:
+        self.analysis = analysis
+        self.calls: list[tuple[ProjectState, str]] = []
+
+    def analyze(self, project_state: ProjectState, user_message: str) -> PlannerAnalysis:
+        self.calls.append((project_state, user_message))
+        return self.analysis
+
+
+def test_build_thinking_graph_routes_planning_requests_and_adds_next_actions(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    planner = FakePlanner(
+        PlannerAnalysis(
+            next_actions_to_add=[
+                NextActionDraft(
+                    description="Draft the first newsletter issue",
+                    time_box_minutes=30,
+                )
+            ]
+        )
+    )
+    graph = build_thinking_graph(
+        frame_analyst,
+        supervisor,
+        repository,
+        planner=planner,
+    )
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="What should I do next?",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert planner.calls
+    assert frame_analyst.calls == []
+    assert result.plan_intent is not None
+    assert result.plan_intent.trigger is PlanTrigger.EXPLICIT_REQUEST
+    assert result.project_state.current_mode is ThinkingMode.DECIDE
+    assert [action.description for action in result.project_state.next_actions] == [
+        "Draft the first newsletter issue"
+    ]
+
+
+def test_build_thinking_graph_skips_planning_without_a_planner(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="What should I do next?",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert result.planner_analysis is None
+    assert result.project_state.next_actions == []
+    assert result.project_state.current_mode is ThinkingMode.DECIDE
