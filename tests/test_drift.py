@@ -2,9 +2,22 @@ from __future__ import annotations
 
 from enum import Enum
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 
-from mythinking.state import NorthStar, ProjectState
+from mythinking.drift import DriftJudge, DriftResolver
+from mythinking.prompts import PromptRegistry
+from mythinking.state import (
+    DriftAssessment,
+    DriftJudgment,
+    DriftSignal,
+    DriftStatus,
+    NorthStar,
+    ProjectState,
+    TangentDisposition,
+)
+
+PROMPT_DIR = Path(__file__).parents[1] / "prompts"
 
 ON_TRACK_STATUSES = {"on_track", "no_drift", "stay_on_track"}
 INSUFFICIENT_CONTEXT_STATUSES = {"insufficient_context", "needs_context", "context_missing"}
@@ -255,3 +268,99 @@ def test_preserve_tangent_is_idempotent_for_repeated_assessments() -> None:
     else:
         assert len(twice.parked_ideas) == 1
         assert _contains_any(twice.parked_ideas[0], "vector")
+
+
+def test_assess_returns_ambiguous_when_no_deterministic_signal_fires() -> None:
+    detector = _create_detector()
+
+    assessment = detector.assess(_anchored_project_state(), "Focus on the riskiest part first.")
+
+    assert _assessment_status(assessment) not in ON_TRACK_STATUSES
+    assert _assessment_status(assessment) not in DRIFT_STATUSES
+    assert _assessment_status(assessment) == "ambiguous"
+
+
+class FakeStructuredModel:
+    def __init__(self, payload: dict[str, str]) -> None:
+        self.payload = payload
+        self.rendered_prompt = ""
+
+    def invoke(self, rendered_prompt: str) -> dict[str, str]:
+        self.rendered_prompt = rendered_prompt
+        return self.payload
+
+
+class FakeModel:
+    def __init__(self, payload: dict[str, str]) -> None:
+        self.structured_model = FakeStructuredModel(payload)
+
+    def with_structured_output(self, schema: object) -> FakeStructuredModel:
+        return self.structured_model
+
+
+def test_drift_resolver_leaves_ambiguous_status_unresolved_without_a_judge() -> None:
+    resolver = DriftResolver(_create_detector(), None)
+
+    assessment = resolver.assess(_anchored_project_state(), "Focus on the riskiest part first.")
+
+    assert assessment.status is DriftStatus.AMBIGUOUS
+
+
+def test_drift_resolver_does_not_call_the_judge_for_confident_assessments() -> None:
+    class ExplodingJudge:
+        def resolve(self, project_state, user_message, assessment):
+            raise AssertionError("judge should not be called for confident assessments")
+
+    resolver = DriftResolver(_create_detector(), ExplodingJudge())
+
+    assessment = resolver.assess(
+        _anchored_project_state(),
+        "The first experiment should be a local CLI capture loop before any UI work.",
+    )
+
+    assert assessment.status is DriftStatus.ON_TRACK
+
+
+def test_drift_judge_resolves_an_ambiguous_turn_to_drifted() -> None:
+    model = FakeModel(
+        {
+            "status": "drifted",
+            "disposition": "branch",
+            "reason": "This introduces an unrelated topic.",
+            "tangent_summary": "Focus on the riskiest part first",
+            "branch_name": "Riskiest Part",
+        }
+    )
+    judge = DriftJudge(PromptRegistry(PROMPT_DIR), model)
+    ambiguous = DriftAssessment(status=DriftStatus.AMBIGUOUS, reason="inconclusive")
+
+    resolved = judge.resolve(
+        _anchored_project_state(),
+        "Focus on the riskiest part first.",
+        ambiguous,
+    )
+
+    assert resolved.status is DriftStatus.DRIFTED
+    assert resolved.disposition is TangentDisposition.BRANCH
+    assert resolved.tangent_summary == "Focus on the riskiest part first"
+    assert resolved.branch_name == "Riskiest Part"
+    assert DriftSignal.MODEL_FALLBACK in resolved.signals
+    assert "riskiest part" in model.structured_model.rendered_prompt.lower()
+
+
+def test_drift_judge_defaults_to_on_track_when_status_is_not_drifted() -> None:
+    model = FakeModel({"status": "ambiguous", "reason": "Unclear either way."})
+    judge = DriftJudge(PromptRegistry(PROMPT_DIR), model)
+    ambiguous = DriftAssessment(status=DriftStatus.AMBIGUOUS, reason="inconclusive")
+
+    resolved = judge.resolve(_anchored_project_state(), "Not sure what this is.", ambiguous)
+
+    assert resolved.status is DriftStatus.ON_TRACK
+    assert DriftSignal.MODEL_FALLBACK in resolved.signals
+
+
+def test_drift_judgment_schema_defaults() -> None:
+    judgment = DriftJudgment()
+
+    assert judgment.status is DriftStatus.ON_TRACK
+    assert judgment.disposition is TangentDisposition.NONE

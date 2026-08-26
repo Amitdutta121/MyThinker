@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from typing import Any
 
+from pydantic import BaseModel
+
+from mythinking.prompts import PromptRegistry
 from mythinking.state import (
     DriftAssessment,
+    DriftJudgment,
     DriftSignal,
     DriftStatus,
     ProjectState,
@@ -136,9 +141,90 @@ class DriftDetector:
             )
 
         return DriftAssessment(
-            status=DriftStatus.ON_TRACK,
-            reason="No deterministic drift signal was strong enough to interrupt the main thread.",
+            status=DriftStatus.AMBIGUOUS,
+            reason=(
+                "No deterministic drift signal was strong enough to classify this turn; "
+                "model judgment is required."
+            ),
         )
+
+
+class DriftJudge:
+    """Model-backed fallback used only when deterministic heuristics are inconclusive."""
+
+    def __init__(
+        self,
+        prompt_registry: PromptRegistry,
+        model: Any,
+        *,
+        prompt_id: str = "drift_judge",
+        prompt_version: int | None = None,
+    ) -> None:
+        self.prompt_registry = prompt_registry
+        self.model = model
+        self.prompt_id = prompt_id
+        self.prompt_version = prompt_version
+
+    def resolve(
+        self,
+        project_state: ProjectState,
+        user_message: str,
+        assessment: DriftAssessment,
+    ) -> DriftAssessment:
+        prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
+        rendered = prompt.render(
+            {
+                "project_state": project_state.model_dump_json(indent=2),
+                "user_message": user_message,
+                "deterministic_assessment": assessment.model_dump_json(indent=2),
+            }
+        )
+        structured_model = self.model.with_structured_output(DriftJudgment)
+        judgment = _validate_model_output(structured_model.invoke(rendered), DriftJudgment)
+
+        status = judgment.status if judgment.status is DriftStatus.DRIFTED else DriftStatus.ON_TRACK
+        if status is DriftStatus.ON_TRACK:
+            return DriftAssessment(
+                status=status,
+                reason=judgment.reason.strip()
+                or "Model fallback judged this turn as still on track.",
+                signals=[DriftSignal.MODEL_FALLBACK],
+            )
+
+        tangent_summary = judgment.tangent_summary.strip() or _summarize_tangent(user_message)
+        disposition = (
+            judgment.disposition
+            if judgment.disposition is not TangentDisposition.NONE
+            else TangentDisposition.BRANCH
+        )
+        return DriftAssessment(
+            status=status,
+            disposition=disposition,
+            reason=judgment.reason.strip() or "Model fallback judged this turn as drifted.",
+            tangent_summary=tangent_summary,
+            branch_name=judgment.branch_name.strip() or _branch_name(tangent_summary),
+            signals=[DriftSignal.MODEL_FALLBACK],
+        )
+
+
+class DriftResolver:
+    """Combine the deterministic detector with an optional model fallback."""
+
+    def __init__(self, detector: DriftDetector, judge: DriftJudge | None = None) -> None:
+        self.detector = detector
+        self.judge = judge
+
+    def assess(self, project_state: ProjectState, user_message: str) -> DriftAssessment:
+        assessment = self.detector.assess(project_state, user_message)
+        if assessment.status is not DriftStatus.AMBIGUOUS or self.judge is None:
+            return assessment
+        return self.judge.resolve(project_state, user_message, assessment)
+
+
+def _validate_model_output(payload: Any, schema: type[BaseModel]) -> BaseModel:
+    if isinstance(payload, schema):
+        return payload
+    return schema.model_validate(payload)
 
 
 def _anchor_terms(project_state: ProjectState) -> set[str]:

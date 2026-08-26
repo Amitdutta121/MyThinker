@@ -1,4 +1,4 @@
-"""LangGraph workflow for the runnable core loop plus M2a drift control."""
+"""LangGraph workflow for the runnable core loop plus M2 drift control."""
 
 from collections.abc import Iterable
 from typing import Any
@@ -7,11 +7,12 @@ from langgraph.graph import END, START, StateGraph
 
 from mythinking.agents.frame_analyst import FrameAnalyst
 from mythinking.agents.supervisor import SupervisorAgent
-from mythinking.branching import BranchManager
-from mythinking.drift import DriftDetector
+from mythinking.branching import BranchManager, BranchSwitcher
+from mythinking.drift import DriftDetector, DriftJudge, DriftResolver
 from mythinking.persistence import StateRepository
 from mythinking.state import (
     Assumption,
+    BranchCommandAction,
     DriftAssessment,
     DriftStatus,
     FrameAnalysis,
@@ -27,22 +28,31 @@ def build_thinking_graph(
     repository: StateRepository,
     *,
     drift_detector: DriftDetector | None = None,
+    drift_judge: DriftJudge | None = None,
     branch_manager: BranchManager | None = None,
+    branch_switcher: BranchSwitcher | None = None,
     checkpointer: Any = None,
 ):
     workflow = StateGraph(SessionGraphState)
-    drift_detector = drift_detector or DriftDetector()
+    drift_resolver = DriftResolver(drift_detector or DriftDetector(), drift_judge)
     branch_manager = branch_manager or BranchManager()
+    branch_switcher = branch_switcher or BranchSwitcher()
 
     workflow.add_node("capture", capture_node)
+    workflow.add_node("handle_branch_command", _branch_command_node(branch_switcher))
     workflow.add_node("frame", _frame_node(frame_analyst))
-    workflow.add_node("detect_drift", _drift_node(drift_detector, branch_manager))
+    workflow.add_node("detect_drift", _drift_node(drift_resolver, branch_manager))
     workflow.add_node("choose_mode", choose_mode_node)
     workflow.add_node("respond", _respond_node(supervisor))
     workflow.add_node("persist", _persist_node(repository))
 
     workflow.add_edge(START, "capture")
-    workflow.add_edge("capture", "frame")
+    workflow.add_edge("capture", "handle_branch_command")
+    workflow.add_conditional_edges(
+        "handle_branch_command",
+        _route_after_branch_command,
+        {"continue": "frame", "handled": "choose_mode"},
+    )
     workflow.add_edge("frame", "detect_drift")
     workflow.add_edge("detect_drift", "choose_mode")
     workflow.add_edge("choose_mode", "respond")
@@ -86,10 +96,29 @@ def _respond_node(supervisor: SupervisorAgent):
             state.user_message,
             state.frame_analysis,
             state.drift_assessment,
+            state.branch_command,
         )
         return {"assistant_turn": assistant_turn}
 
     return run
+
+
+def _branch_command_node(branch_switcher: BranchSwitcher):
+    def run(state: SessionGraphState) -> dict[str, Any]:
+        command = branch_switcher.detect(state.project_state, state.user_message)
+        if command.action is BranchCommandAction.NONE:
+            return {"branch_command": command}
+        project_state = branch_switcher.apply(state.project_state, command)
+        return {"branch_command": command, "project_state": project_state}
+
+    return run
+
+
+def _route_after_branch_command(state: SessionGraphState) -> str:
+    command = state.branch_command
+    if command is not None and command.action is not BranchCommandAction.NONE:
+        return "handled"
+    return "continue"
 
 
 def _persist_node(repository: StateRepository):
@@ -101,11 +130,11 @@ def _persist_node(repository: StateRepository):
 
 
 def _drift_node(
-    drift_detector: DriftDetector,
+    drift_resolver: DriftResolver,
     branch_manager: BranchManager,
 ):
     def run(state: SessionGraphState) -> dict[str, DriftAssessment | ProjectState]:
-        assessment = drift_detector.assess(state.project_state, state.user_message)
+        assessment = drift_resolver.assess(state.project_state, state.user_message)
         if assessment.status is DriftStatus.DRIFTED:
             project_state = branch_manager.preserve_tangent(state.project_state, assessment)
         elif state.frame_analysis is not None:

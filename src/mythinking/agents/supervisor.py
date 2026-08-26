@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 from mythinking.prompts import PromptRegistry
 from mythinking.state import (
     AssistantTurn,
+    BranchCommand,
+    BranchCommandAction,
     DriftAssessment,
     DriftStatus,
     FrameAnalysis,
@@ -45,6 +47,7 @@ class SupervisorAgent:
         user_message: str,
         frame_analysis: FrameAnalysis | None = None,
         drift_assessment: DriftAssessment | None = None,
+        branch_command: BranchCommand | None = None,
     ) -> AssistantTurn:
         prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
         rendered = prompt.render(
@@ -59,6 +62,11 @@ class SupervisorAgent:
                 "drift_assessment": (
                     drift_assessment.model_dump_json(indent=2)
                     if drift_assessment is not None
+                    else "null"
+                ),
+                "branch_command": (
+                    branch_command.model_dump_json(indent=2)
+                    if branch_command is not None
                     else "null"
                 ),
             }
@@ -83,6 +91,10 @@ class SupervisorAgent:
         message = reply.message.strip()
         if question and question not in message:
             message = f"{message}\n\n{question}"
+        if branch_command is not None and branch_command.action is not BranchCommandAction.NONE:
+            confirmation = _branch_confirmation(branch_command)
+            if confirmation.lower() not in message.lower():
+                message = f"{message}\n\n{confirmation}" if message else confirmation
         return AssistantTurn(
             project_id=project_state.project_id,
             mode=project_state.current_mode,
@@ -101,3 +113,10 @@ def _challenge_question(drift_assessment: DriftAssessment) -> str:
     if drift_assessment.disposition is TangentDisposition.PARKED:
         return "Should we return to the main goal now, or keep this tangent parked for later?"
     return "Should we return to the main goal, or spin this tangent into its own branch?"
+
+
+def _branch_confirmation(branch_command: BranchCommand) -> str:
+    if branch_command.action is BranchCommandAction.RETURN_TO_MAIN:
+        return "Switched the active thread back to the main goal."
+    name = branch_command.target_branch_name or "that branch"
+    return f'Switched the active thread to "{name}".'

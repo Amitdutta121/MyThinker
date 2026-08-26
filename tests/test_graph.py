@@ -10,9 +10,12 @@ from mythinking.persistence import StateRepository
 from mythinking.state import (
     AssistantTurn,
     AssumptionDraft,
+    BranchCommand,
+    BranchStatus,
     DriftAssessment,
     DriftStatus,
     FrameAnalysis,
+    IdeaBranch,
     NorthStarUpdate,
     ProjectState,
     SessionGraphState,
@@ -33,7 +36,13 @@ class FakeFrameAnalyst:
 class FakeSupervisor:
     def __init__(self) -> None:
         self.calls: list[
-            tuple[ProjectState, str, FrameAnalysis | None, DriftAssessment | None]
+            tuple[
+                ProjectState,
+                str,
+                FrameAnalysis | None,
+                DriftAssessment | None,
+                BranchCommand | None,
+            ]
         ] = []
 
     def respond(
@@ -42,8 +51,11 @@ class FakeSupervisor:
         user_message: str,
         frame_analysis: FrameAnalysis | None = None,
         drift_assessment: DriftAssessment | None = None,
+        branch_command: BranchCommand | None = None,
     ) -> AssistantTurn:
-        self.calls.append((project_state, user_message, frame_analysis, drift_assessment))
+        self.calls.append(
+            (project_state, user_message, frame_analysis, drift_assessment, branch_command)
+        )
         question = frame_analysis.recommended_question if frame_analysis else ""
         return AssistantTurn(
             project_id=project_state.project_id,
@@ -248,3 +260,102 @@ def test_build_thinking_graph_does_not_merge_tangent_frame_updates_into_north_st
     assert result.project_state.open_questions == []
     assert result.project_state.branches
     assert result.project_state.branches[0].summary == "Tell me everything about vector databases"
+
+
+class FakeDriftJudge:
+    def __init__(self, resolved: DriftAssessment) -> None:
+        self.resolved = resolved
+        self.calls: list[tuple[ProjectState, str, DriftAssessment]] = []
+
+    def resolve(
+        self,
+        project_state: ProjectState,
+        user_message: str,
+        assessment: DriftAssessment,
+    ) -> DriftAssessment:
+        self.calls.append((project_state, user_message, assessment))
+        return self.resolved
+
+
+def _anchored_project_state() -> ProjectState:
+    project_state = ProjectState()
+    project_state.north_star.problem_statement = "Product idea notes are scattered"
+    project_state.north_star.desired_outcome = "Keep the idea thread focused"
+    project_state.north_star.beneficiary = "Solo founder"
+    return project_state
+
+
+def test_ambiguous_drift_without_a_judge_falls_back_to_frame_merge(tmp_path: Path) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    analysis = FrameAnalysis(north_star=NorthStarUpdate(current_hypothesis="Try a narrow beta"))
+    frame_analyst = FakeFrameAnalyst(analysis)
+    supervisor = FakeSupervisor()
+    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="Focus on the riskiest part first.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert result.drift_assessment is not None
+    assert result.drift_assessment.status is DriftStatus.AMBIGUOUS
+    assert result.project_state.current_mode is not ThinkingMode.CHALLENGE
+    assert result.project_state.north_star.current_hypothesis == "Try a narrow beta"
+
+
+def test_ambiguous_drift_resolved_by_judge_can_trigger_challenge_mode(tmp_path: Path) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    resolved = DriftAssessment(
+        status=DriftStatus.DRIFTED,
+        tangent_summary="Focus on the riskiest part first",
+        branch_name="Riskiest Part",
+    )
+    judge = FakeDriftJudge(resolved)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, drift_judge=judge)
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="Focus on the riskiest part first.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert judge.calls
+    assert result.project_state.current_mode is ThinkingMode.CHALLENGE
+    assert result.project_state.branches
+    assert result.project_state.branches[0].summary == "Focus on the riskiest part first"
+
+
+def test_build_thinking_graph_switches_active_branch_and_skips_frame(tmp_path: Path) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+
+    project_state = _anchored_project_state()
+    project_state.branches = [
+        IdeaBranch(
+            name="Newsletter Idea",
+            summary="Start a newsletter for solo founders",
+            status=BranchStatus.PARKED,
+        )
+    ]
+
+    initial_state = SessionGraphState(
+        project_state=project_state,
+        user_message="Let's switch to the newsletter branch.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert frame_analyst.calls == []
+    assert result.branch_command is not None
+    assert result.branch_command.target_branch_name == "Newsletter Idea"
+    assert result.project_state.active_branch_id == project_state.branches[0].id
+    assert result.project_state.branches[0].status is BranchStatus.ACTIVE
+    assert supervisor.calls[0][4] is not None
+    assert supervisor.calls[0][4].target_branch_name == "Newsletter Idea"

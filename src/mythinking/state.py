@@ -48,6 +48,7 @@ class AssumptionStatus(StrEnum):
 class DriftStatus(StrEnum):
     ON_TRACK = "on_track"
     INSUFFICIENT_CONTEXT = "insufficient_context"
+    AMBIGUOUS = "ambiguous"
     DRIFTED = "drifted"
 
 
@@ -62,6 +63,13 @@ class DriftSignal(StrEnum):
     LOW_ANCHOR_OVERLAP = "low_anchor_overlap"
     EXPLICIT_TANGENT = "explicit_tangent"
     PARKING_LANGUAGE = "parking_language"
+    MODEL_FALLBACK = "model_fallback"
+
+
+class BranchCommandAction(StrEnum):
+    NONE = "none"
+    SWITCH = "switch"
+    RETURN_TO_MAIN = "return_to_main"
 
 
 class NorthStar(BaseModel):
@@ -158,7 +166,7 @@ class FrameAnalysis(BaseModel):
 
 
 class DriftAssessment(BaseModel):
-    """Deterministic drift classification for the current turn."""
+    """Drift classification for the current turn, deterministic or model-resolved."""
 
     status: DriftStatus = DriftStatus.ON_TRACK
     disposition: TangentDisposition = TangentDisposition.NONE
@@ -166,6 +174,25 @@ class DriftAssessment(BaseModel):
     tangent_summary: str = ""
     branch_name: str = ""
     signals: list[DriftSignal] = Field(default_factory=list)
+
+
+class DriftJudgment(BaseModel):
+    """Structured fallback judgment returned by the model when heuristics are inconclusive."""
+
+    status: DriftStatus = DriftStatus.ON_TRACK
+    disposition: TangentDisposition = TangentDisposition.NONE
+    reason: str = ""
+    tangent_summary: str = ""
+    branch_name: str = ""
+
+
+class BranchCommand(BaseModel):
+    """Deterministic classification of an explicit branch-navigation request."""
+
+    action: BranchCommandAction = BranchCommandAction.NONE
+    target_branch_id: str | None = None
+    target_branch_name: str = ""
+    matched_text: str = ""
 
 
 class AssistantTurn(BaseModel):
@@ -214,6 +241,7 @@ class SessionGraphState(BaseModel):
 
     project_state: ProjectState
     user_message: str = Field(min_length=1)
+    branch_command: BranchCommand | None = None
     frame_analysis: FrameAnalysis | None = None
     drift_assessment: DriftAssessment | None = None
     assistant_turn: AssistantTurn | None = None

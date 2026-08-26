@@ -4,7 +4,9 @@ from pathlib import Path
 
 from mythinking.agents.frame_analyst import FrameAnalyst
 from mythinking.agents.supervisor import SupervisorAgent
+from mythinking.branching import BranchSwitcher
 from mythinking.config import Settings, get_settings
+from mythinking.drift import DriftJudge
 from mythinking.graph import build_thinking_graph
 from mythinking.llm import create_chat_model
 from mythinking.persistence import StateRepository, open_sqlite_checkpointer
@@ -24,6 +26,8 @@ class ThinkingRuntime:
         prompt_registry: PromptRegistry | None = None,
         frame_analyst: FrameAnalyst | None = None,
         supervisor: SupervisorAgent | None = None,
+        drift_judge: DriftJudge | None = None,
+        branch_switcher: BranchSwitcher | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.repository = repository or StateRepository(self.settings.state_database_path)
@@ -39,6 +43,11 @@ class ThinkingRuntime:
             self.prompt_registry,
             create_chat_model(self.settings),
         )
+        self.drift_judge = drift_judge or DriftJudge(
+            self.prompt_registry,
+            create_chat_model(self.settings),
+        )
+        self.branch_switcher = branch_switcher or BranchSwitcher()
 
     def run_turn(self, user_message: str, project_id: str | None = None) -> AssistantTurn:
         message = user_message.strip()
@@ -56,6 +65,8 @@ class ThinkingRuntime:
                 self.frame_analyst,
                 self.supervisor,
                 self.repository,
+                drift_judge=self.drift_judge,
+                branch_switcher=self.branch_switcher,
                 checkpointer=checkpointer,
             )
             result = graph.invoke(

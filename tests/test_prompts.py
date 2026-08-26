@@ -13,6 +13,7 @@ def test_prompt_registry_loads_research_metadata() -> None:
 
     assert "lead_partner:v1" in prompts
     assert "frame_analyst:v1" in prompts
+    assert "drift_judge:v1" in prompts
     assert all(prompt.evidence for prompt in prompts.values())
     assert all(prompt.eval_datasets for prompt in prompts.values())
 
@@ -20,7 +21,7 @@ def test_prompt_registry_loads_research_metadata() -> None:
 def test_latest_prompt_version_is_selected() -> None:
     prompt = PromptRegistry(PROMPT_DIR).get("lead_partner")
 
-    assert prompt.version == 2
+    assert prompt.version == 3
 
 
 def test_prompt_render_requires_all_variables() -> None:
@@ -32,5 +33,6 @@ def test_prompt_render_requires_all_variables() -> None:
                 "project_state": "{}",
                 "frame_analysis": "null",
                 "drift_assessment": "null",
+                "branch_command": "null",
             }
         )

@@ -3,16 +3,43 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
+from mythinking.branching import BranchSwitcher
 from mythinking.config import Settings
 from mythinking.runtime import ThinkingRuntime, create_runtime
 from mythinking.state import (
     AssistantTurn,
+    BranchCommand,
+    BranchStatus,
     DriftAssessment,
+    DriftSignal,
+    DriftStatus,
     FrameAnalysis,
+    IdeaBranch,
     NorthStarUpdate,
     ProjectState,
     ThinkingMode,
 )
+
+
+class StubDriftJudge:
+    """Deterministic stand-in that keeps ambiguous turns on track by default."""
+
+    def __init__(self, resolved: DriftAssessment | None = None) -> None:
+        self.resolved = resolved
+        self.calls: list[tuple[ProjectState, str, DriftAssessment]] = []
+
+    def resolve(
+        self,
+        project_state: ProjectState,
+        user_message: str,
+        assessment: DriftAssessment,
+    ) -> DriftAssessment:
+        self.calls.append((project_state, user_message, assessment))
+        return self.resolved or DriftAssessment(
+            status=DriftStatus.ON_TRACK,
+            reason="stub judge default",
+            signals=[DriftSignal.MODEL_FALLBACK],
+        )
 
 
 class SequenceFrameAnalyst:
@@ -28,7 +55,14 @@ class SequenceFrameAnalyst:
 class RecordingSupervisor:
     def __init__(self) -> None:
         self.calls: list[
-            tuple[str, ThinkingMode, str, FrameAnalysis | None, DriftAssessment | None]
+            tuple[
+                str,
+                ThinkingMode,
+                str,
+                FrameAnalysis | None,
+                DriftAssessment | None,
+                BranchCommand | None,
+            ]
         ] = []
 
     def respond(
@@ -37,6 +71,7 @@ class RecordingSupervisor:
         user_message: str,
         frame_analysis: FrameAnalysis | None = None,
         drift_assessment: DriftAssessment | None = None,
+        branch_command: BranchCommand | None = None,
     ) -> AssistantTurn:
         self.calls.append(
             (
@@ -45,6 +80,7 @@ class RecordingSupervisor:
                 user_message,
                 frame_analysis,
                 drift_assessment,
+                branch_command,
             )
         )
         question = frame_analysis.recommended_question if frame_analysis else ""
@@ -61,6 +97,8 @@ def _build_runtime(
     *,
     frame_analyst: SequenceFrameAnalyst,
     supervisor: RecordingSupervisor,
+    drift_judge: StubDriftJudge | None = None,
+    branch_switcher: BranchSwitcher | None = None,
 ) -> ThinkingRuntime:
     settings = Settings(
         _env_file=None,
@@ -71,6 +109,8 @@ def _build_runtime(
         settings=settings,
         frame_analyst=frame_analyst,
         supervisor=supervisor,
+        drift_judge=drift_judge or StubDriftJudge(),
+        branch_switcher=branch_switcher or BranchSwitcher(),
     )
 
 
@@ -228,6 +268,97 @@ def test_run_turn_does_not_persist_tangent_frame_updates_into_core_state(tmp_pat
     assert saved.open_questions == []
     assert len(saved.branches) == 1
     assert saved.branches[0].summary == "Tell me everything about vector databases"
+
+
+def test_run_turn_resolves_ambiguous_drift_through_configured_judge(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+            FrameAnalysis(),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    resolved = DriftAssessment(
+        status=DriftStatus.DRIFTED,
+        tangent_summary="Focus on the riskiest part first",
+        branch_name="Riskiest Part",
+    )
+    drift_judge = StubDriftJudge(resolved)
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+        drift_judge=drift_judge,
+    )
+    seed_turn = runtime.run_turn(
+        "I need a better way to keep product idea notes focused for solo founders."
+    )
+
+    ambiguous_turn = runtime.run_turn(
+        "Focus on the riskiest part first.",
+        project_id=seed_turn.project_id,
+    )
+    saved = runtime.get_project_state(seed_turn.project_id)
+
+    assert drift_judge.calls
+    assert ambiguous_turn.mode is ThinkingMode.CHALLENGE
+    assert saved is not None
+    assert saved.branches
+    assert saved.branches[0].summary == "Focus on the riskiest part first"
+
+
+def test_run_turn_applies_an_explicit_branch_switch_command(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+    )
+    seed_turn = runtime.run_turn(
+        "I need a better way to keep product idea notes focused for solo founders."
+    )
+
+    project_state = runtime.get_project_state(seed_turn.project_id)
+    assert project_state is not None
+    project_state.branches.append(
+        IdeaBranch(
+            name="Newsletter Idea",
+            summary="Start a newsletter for solo founders",
+            status=BranchStatus.PARKED,
+        )
+    )
+    runtime.repository.save(project_state)
+
+    runtime.run_turn(
+        "Let's switch to the newsletter branch.",
+        project_id=seed_turn.project_id,
+    )
+    saved = runtime.get_project_state(seed_turn.project_id)
+
+    assert saved is not None
+    assert saved.active_branch_id == saved.branches[0].id
+    assert saved.branches[0].status is BranchStatus.ACTIVE
+    assert len(frame_analyst.calls) == 1
+    switch_call = supervisor.calls[-1]
+    assert switch_call[5] is not None
+    assert switch_call[5].target_branch_name == "Newsletter Idea"
 
 
 def test_get_project_state_returns_none_for_unknown_project(tmp_path: Path) -> None:
