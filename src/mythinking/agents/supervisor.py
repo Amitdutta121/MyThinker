@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from mythinking.evidence import format_evidence_ledger
 from mythinking.prompts import PromptRegistry
 from mythinking.state import (
     AssistantTurn,
@@ -69,6 +70,7 @@ class SupervisorAgent:
                     if branch_command is not None
                     else "null"
                 ),
+                "evidence_ledger": format_evidence_ledger(project_state),
             }
         )
         structured_model = self.model.with_structured_output(SupervisorReply)

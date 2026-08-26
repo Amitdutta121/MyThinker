@@ -72,6 +72,12 @@ class BranchCommandAction(StrEnum):
     RETURN_TO_MAIN = "return_to_main"
 
 
+class ResearchTaskStatus(StrEnum):
+    OPEN = "open"
+    ANSWERED = "answered"
+    DROPPED = "dropped"
+
+
 class NorthStar(BaseModel):
     """The compact goal representation kept visible throughout a project."""
 
@@ -112,6 +118,15 @@ class EvidenceItem(BaseModel):
     source_title: str = ""
     notes: str = ""
     captured_at: datetime = Field(default_factory=utc_now)
+
+
+class ResearchTask(BaseModel):
+    id: str = Field(default_factory=new_id)
+    question: str
+    status: ResearchTaskStatus = ResearchTaskStatus.OPEN
+    notes: str = ""
+    linked_evidence_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class Decision(BaseModel):
@@ -163,6 +178,31 @@ class FrameAnalysis(BaseModel):
     assumptions_to_add: list[AssumptionDraft] = Field(default_factory=list)
     open_questions_to_add: list[str] = Field(default_factory=list)
     recommended_question: str = ""
+
+
+class EvidenceDraft(BaseModel):
+    """Structured evidence candidate before it is merged into persisted state."""
+
+    claim: str
+    kind: EvidenceKind
+    source_url: str = ""
+    source_title: str = ""
+    notes: str = ""
+
+
+class ResearchTaskDraft(BaseModel):
+    """Structured research task candidate before it is merged into persisted state."""
+
+    question: str
+    notes: str = ""
+
+
+class EvidenceAnalysis(BaseModel):
+    """Structured evidence-ledger update used by the M3 graph."""
+
+    summary: str = ""
+    evidence_to_add: list[EvidenceDraft] = Field(default_factory=list)
+    research_tasks_to_add: list[ResearchTaskDraft] = Field(default_factory=list)
 
 
 class DriftAssessment(BaseModel):
@@ -217,6 +257,7 @@ class ProjectState(BaseModel):
     branches: list[IdeaBranch] = Field(default_factory=list)
     assumptions: list[Assumption] = Field(default_factory=list)
     evidence: list[EvidenceItem] = Field(default_factory=list)
+    research_tasks: list[ResearchTask] = Field(default_factory=list)
     decisions: list[Decision] = Field(default_factory=list)
     next_actions: list[NextAction] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
@@ -244,4 +285,5 @@ class SessionGraphState(BaseModel):
     branch_command: BranchCommand | None = None
     frame_analysis: FrameAnalysis | None = None
     drift_assessment: DriftAssessment | None = None
+    evidence_analysis: EvidenceAnalysis | None = None
     assistant_turn: AssistantTurn | None = None

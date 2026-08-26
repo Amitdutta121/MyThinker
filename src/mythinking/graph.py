@@ -1,14 +1,16 @@
-"""LangGraph workflow for the runnable core loop plus M2 drift control."""
+"""LangGraph workflow for the core loop, M2 drift control, and M3 evidence."""
 
 from collections.abc import Iterable
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from mythinking.agents.evidence_analyst import EvidenceAnalyst
 from mythinking.agents.frame_analyst import FrameAnalyst
 from mythinking.agents.supervisor import SupervisorAgent
 from mythinking.branching import BranchManager, BranchSwitcher
 from mythinking.drift import DriftDetector, DriftJudge, DriftResolver
+from mythinking.evidence import EvidenceLedger
 from mythinking.persistence import StateRepository
 from mythinking.state import (
     Assumption,
@@ -31,17 +33,21 @@ def build_thinking_graph(
     drift_judge: DriftJudge | None = None,
     branch_manager: BranchManager | None = None,
     branch_switcher: BranchSwitcher | None = None,
+    evidence_analyst: EvidenceAnalyst | None = None,
+    evidence_ledger: EvidenceLedger | None = None,
     checkpointer: Any = None,
 ):
     workflow = StateGraph(SessionGraphState)
     drift_resolver = DriftResolver(drift_detector or DriftDetector(), drift_judge)
     branch_manager = branch_manager or BranchManager()
     branch_switcher = branch_switcher or BranchSwitcher()
+    evidence_ledger = evidence_ledger or EvidenceLedger()
 
     workflow.add_node("capture", capture_node)
     workflow.add_node("handle_branch_command", _branch_command_node(branch_switcher))
     workflow.add_node("frame", _frame_node(frame_analyst))
     workflow.add_node("detect_drift", _drift_node(drift_resolver, branch_manager))
+    workflow.add_node("extract_evidence", _evidence_node(evidence_analyst, evidence_ledger))
     workflow.add_node("choose_mode", choose_mode_node)
     workflow.add_node("respond", _respond_node(supervisor))
     workflow.add_node("persist", _persist_node(repository))
@@ -54,7 +60,8 @@ def build_thinking_graph(
         {"continue": "frame", "handled": "choose_mode"},
     )
     workflow.add_edge("frame", "detect_drift")
-    workflow.add_edge("detect_drift", "choose_mode")
+    workflow.add_edge("detect_drift", "extract_evidence")
+    workflow.add_edge("extract_evidence", "choose_mode")
     workflow.add_edge("choose_mode", "respond")
     workflow.add_edge("respond", "persist")
     workflow.add_edge("persist", END)
@@ -110,6 +117,17 @@ def _branch_command_node(branch_switcher: BranchSwitcher):
             return {"branch_command": command}
         project_state = branch_switcher.apply(state.project_state, command)
         return {"branch_command": command, "project_state": project_state}
+
+    return run
+
+
+def _evidence_node(evidence_analyst: EvidenceAnalyst | None, evidence_ledger: EvidenceLedger):
+    def run(state: SessionGraphState) -> dict[str, Any]:
+        if evidence_analyst is None:
+            return {}
+        analysis = evidence_analyst.analyze(state.project_state, state.user_message)
+        project_state = evidence_ledger.merge(state.project_state, analysis)
+        return {"evidence_analysis": analysis, "project_state": project_state}
 
     return run
 

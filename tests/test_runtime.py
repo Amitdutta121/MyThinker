@@ -5,6 +5,7 @@ from pydantic import SecretStr
 
 from mythinking.branching import BranchSwitcher
 from mythinking.config import Settings
+from mythinking.evidence import EvidenceLedger
 from mythinking.runtime import ThinkingRuntime, create_runtime
 from mythinking.state import (
     AssistantTurn,
@@ -13,12 +14,27 @@ from mythinking.state import (
     DriftAssessment,
     DriftSignal,
     DriftStatus,
+    EvidenceAnalysis,
+    EvidenceDraft,
+    EvidenceKind,
     FrameAnalysis,
     IdeaBranch,
     NorthStarUpdate,
     ProjectState,
     ThinkingMode,
 )
+
+
+class StubEvidenceAnalyst:
+    """Deterministic stand-in that extracts no evidence unless configured to."""
+
+    def __init__(self, analysis: EvidenceAnalysis | None = None) -> None:
+        self.analysis = analysis or EvidenceAnalysis()
+        self.calls: list[tuple[str, str]] = []
+
+    def analyze(self, project_state: ProjectState, user_message: str) -> EvidenceAnalysis:
+        self.calls.append((project_state.project_id, user_message))
+        return self.analysis
 
 
 class StubDriftJudge:
@@ -99,6 +115,8 @@ def _build_runtime(
     supervisor: RecordingSupervisor,
     drift_judge: StubDriftJudge | None = None,
     branch_switcher: BranchSwitcher | None = None,
+    evidence_analyst: StubEvidenceAnalyst | None = None,
+    evidence_ledger: EvidenceLedger | None = None,
 ) -> ThinkingRuntime:
     settings = Settings(
         _env_file=None,
@@ -111,6 +129,8 @@ def _build_runtime(
         supervisor=supervisor,
         drift_judge=drift_judge or StubDriftJudge(),
         branch_switcher=branch_switcher or BranchSwitcher(),
+        evidence_analyst=evidence_analyst or StubEvidenceAnalyst(),
+        evidence_ledger=evidence_ledger or EvidenceLedger(),
     )
 
 
@@ -359,6 +379,46 @@ def test_run_turn_applies_an_explicit_branch_switch_command(tmp_path: Path) -> N
     switch_call = supervisor.calls[-1]
     assert switch_call[5] is not None
     assert switch_call[5].target_branch_name == "Newsletter Idea"
+
+
+def test_run_turn_writes_extracted_evidence_into_project_state(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    evidence_analyst = StubEvidenceAnalyst(
+        EvidenceAnalysis(
+            evidence_to_add=[
+                EvidenceDraft(
+                    claim="Remote work always reduces innovation",
+                    kind=EvidenceKind.HYPOTHESIS,
+                )
+            ]
+        )
+    )
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+        evidence_analyst=evidence_analyst,
+    )
+
+    turn = runtime.run_turn("Remote work always reduces innovation, so require office attendance.")
+    saved = runtime.get_project_state(turn.project_id)
+
+    assert evidence_analyst.calls
+    assert saved is not None
+    assert len(saved.evidence) == 1
+    assert saved.evidence[0].kind is EvidenceKind.HYPOTHESIS
+    assert saved.evidence[0].claim == "Remote work always reduces innovation"
 
 
 def test_get_project_state_returns_none_for_unknown_project(tmp_path: Path) -> None:

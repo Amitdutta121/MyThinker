@@ -14,6 +14,9 @@ from mythinking.state import (
     BranchStatus,
     DriftAssessment,
     DriftStatus,
+    EvidenceAnalysis,
+    EvidenceDraft,
+    EvidenceKind,
     FrameAnalysis,
     IdeaBranch,
     NorthStarUpdate,
@@ -359,3 +362,101 @@ def test_build_thinking_graph_switches_active_branch_and_skips_frame(tmp_path: P
     assert result.project_state.branches[0].status is BranchStatus.ACTIVE
     assert supervisor.calls[0][4] is not None
     assert supervisor.calls[0][4].target_branch_name == "Newsletter Idea"
+
+
+class FakeEvidenceAnalyst:
+    def __init__(self, analysis: EvidenceAnalysis) -> None:
+        self.analysis = analysis
+        self.calls: list[tuple[ProjectState, str]] = []
+
+    def analyze(self, project_state: ProjectState, user_message: str) -> EvidenceAnalysis:
+        self.calls.append((project_state, user_message))
+        return self.analysis
+
+
+def test_build_thinking_graph_merges_extracted_evidence_into_project_state(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    evidence_analyst = FakeEvidenceAnalyst(
+        EvidenceAnalysis(
+            evidence_to_add=[
+                EvidenceDraft(
+                    claim="Remote work always reduces innovation",
+                    kind=EvidenceKind.HYPOTHESIS,
+                )
+            ]
+        )
+    )
+    graph = build_thinking_graph(
+        frame_analyst,
+        supervisor,
+        repository,
+        evidence_analyst=evidence_analyst,
+    )
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="Remote work always reduces innovation, so require office attendance.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert evidence_analyst.calls
+    assert result.evidence_analysis is not None
+    assert len(result.project_state.evidence) == 1
+    assert result.project_state.evidence[0].kind is EvidenceKind.HYPOTHESIS
+
+
+def test_build_thinking_graph_skips_evidence_extraction_without_an_analyst(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="The first experiment should be a local CLI capture loop.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert result.evidence_analysis is None
+    assert result.project_state.evidence == []
+
+
+def test_build_thinking_graph_skips_evidence_extraction_for_branch_commands(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    evidence_analyst = FakeEvidenceAnalyst(EvidenceAnalysis())
+    graph = build_thinking_graph(
+        frame_analyst,
+        supervisor,
+        repository,
+        evidence_analyst=evidence_analyst,
+    )
+
+    project_state = _anchored_project_state()
+    project_state.branches = [
+        IdeaBranch(
+            name="Newsletter Idea",
+            summary="Start a newsletter for solo founders",
+            status=BranchStatus.PARKED,
+        )
+    ]
+    initial_state = SessionGraphState(
+        project_state=project_state,
+        user_message="Let's switch to the newsletter branch.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert evidence_analyst.calls == []
+    assert result.evidence_analysis is None

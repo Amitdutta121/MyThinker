@@ -7,6 +7,8 @@ from mythinking.state import (
     BranchCommandAction,
     DriftAssessment,
     DriftStatus,
+    EvidenceItem,
+    EvidenceKind,
     ProjectState,
     TangentDisposition,
     ThinkingMode,
@@ -90,3 +92,21 @@ def test_supervisor_adds_return_to_main_confirmation_when_model_omits_one() -> N
     )
 
     assert "Switched the active thread back to the main goal." in reply.message
+
+
+def test_supervisor_renders_the_evidence_ledger_into_the_prompt() -> None:
+    model = FakeModel({"message": "Noted.", "question": ""})
+    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
+    project_state.evidence = [
+        EvidenceItem(
+            claim="Remote work always reduces innovation",
+            kind=EvidenceKind.HYPOTHESIS,
+        )
+    ]
+
+    agent.respond(project_state, "What should we test next?")
+
+    rendered = model.structured_model.rendered_prompt.lower()
+    assert "hypotheses (unverified)" in rendered
+    assert "remote work always reduces innovation" in rendered
