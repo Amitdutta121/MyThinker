@@ -25,6 +25,11 @@ from mythinking.state import (
     IntentAction,
     NorthStarUpdate,
     ProjectState,
+    ResearcherAnalysis,
+    ResearchIntent,
+    ResearchTask,
+    ResearchTaskStatus,
+    ResearchTrigger,
     SessionGraphState,
     SynthesizerAnalysis,
     ThinkingMode,
@@ -52,6 +57,7 @@ class FakeSupervisor:
                 BranchCommand | None,
                 ExplorerAnalysis | None,
                 SynthesizerAnalysis | None,
+                ResearcherAnalysis | None,
             ]
         ] = []
 
@@ -64,6 +70,7 @@ class FakeSupervisor:
         branch_command: BranchCommand | None = None,
         exploration_analysis: ExplorerAnalysis | None = None,
         synthesis: SynthesizerAnalysis | None = None,
+        research_analysis: ResearcherAnalysis | None = None,
     ) -> AssistantTurn:
         self.calls.append(
             (
@@ -74,6 +81,7 @@ class FakeSupervisor:
                 branch_command,
                 exploration_analysis,
                 synthesis,
+                research_analysis,
             )
         )
         question = frame_analysis.recommended_question if frame_analysis else ""
@@ -102,6 +110,20 @@ def test_choose_mode_returns_capture_when_core_frame_is_present() -> None:
     mode = choose_mode(project_state, FrameAnalysis(), None)
 
     assert mode is ThinkingMode.CAPTURE
+
+
+def test_choose_mode_returns_research_for_an_explicit_research_intent() -> None:
+    project_state = ProjectState()
+
+    mode = choose_mode(
+        project_state,
+        FrameAnalysis(),
+        None,
+        None,
+        ResearchIntent(trigger=ResearchTrigger.EXPLICIT_REQUEST),
+    )
+
+    assert mode is ThinkingMode.RESEARCH
 
 
 def test_choose_mode_returns_challenge_when_drift_is_detected() -> None:
@@ -599,3 +621,83 @@ def test_build_thinking_graph_skips_explore_and_converge_without_specialists(
     assert result.exploration_analysis is None
     assert result.project_state.branches == []
     assert result.project_state.current_mode is ThinkingMode.EXPLORE
+
+
+class FakeResearcher:
+    def __init__(self, analysis: ResearcherAnalysis) -> None:
+        self.analysis = analysis
+        self.calls: list[tuple[ProjectState, str, ResearchTask | None]] = []
+
+    def analyze(
+        self,
+        project_state: ProjectState,
+        user_message: str,
+        research_task: ResearchTask | None = None,
+    ) -> ResearcherAnalysis:
+        self.calls.append((project_state, user_message, research_task))
+        return self.analysis
+
+
+def test_build_thinking_graph_routes_research_requests_and_imports_evidence(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    researcher = FakeResearcher(
+        ResearcherAnalysis(
+            findings_to_add=[
+                EvidenceDraft(
+                    claim="The changelog shows weekly releases",
+                    kind=EvidenceKind.FACT,
+                    source_title="Internal changelog",
+                )
+            ],
+            task_resolved=True,
+        )
+    )
+    graph = build_thinking_graph(
+        frame_analyst,
+        supervisor,
+        repository,
+        researcher=researcher,
+    )
+
+    project_state = _anchored_project_state()
+    task = ResearchTask(question="Do we ship weekly?")
+    project_state.research_tasks = [task]
+    initial_state = SessionGraphState(
+        project_state=project_state,
+        user_message="Can you research whether we ship weekly?",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert researcher.calls
+    assert frame_analyst.calls == []
+    assert result.research_intent is not None
+    assert result.research_intent.trigger is ResearchTrigger.EXPLICIT_REQUEST
+    assert result.research_intent.research_task_id == task.id
+    assert result.project_state.current_mode is ThinkingMode.RESEARCH
+    assert len(result.project_state.evidence) == 1
+    assert result.project_state.research_tasks[0].status is ResearchTaskStatus.ANSWERED
+
+
+def test_build_thinking_graph_skips_research_without_a_researcher(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="Can you research this for me?",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert result.research_analysis is None
+    assert result.project_state.evidence == []
+    assert result.project_state.current_mode is ThinkingMode.RESEARCH

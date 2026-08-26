@@ -84,6 +84,11 @@ class IntentAction(StrEnum):
     CONVERGE = "converge"
 
 
+class ResearchTrigger(StrEnum):
+    NONE = "none"
+    EXPLICIT_REQUEST = "explicit_request"
+
+
 class NorthStar(BaseModel):
     """The compact goal representation kept visible throughout a project."""
 
@@ -249,6 +254,23 @@ class ExplorationIntent(BaseModel):
     matched_text: str = ""
 
 
+class ResearchIntent(BaseModel):
+    """Deterministic classification of an explicit request to enter research mode."""
+
+    trigger: ResearchTrigger = ResearchTrigger.NONE
+    research_task_id: str = ""
+    matched_text: str = ""
+
+
+class ResearcherAnalysis(BaseModel):
+    """Structured scoped-research answer used by the M5 graph."""
+
+    summary: str = ""
+    answer: str = ""
+    findings_to_add: list[EvidenceDraft] = Field(default_factory=list)
+    task_resolved: bool = False
+
+
 class DriftAssessment(BaseModel):
     """Drift classification for the current turn, deterministic or model-resolved."""
 
@@ -333,4 +355,6 @@ class SessionGraphState(BaseModel):
     exploration_intent: ExplorationIntent | None = None
     exploration_analysis: ExplorerAnalysis | None = None
     synthesis: SynthesizerAnalysis | None = None
+    research_intent: ResearchIntent | None = None
+    research_analysis: ResearcherAnalysis | None = None
     assistant_turn: AssistantTurn | None = None

@@ -13,6 +13,9 @@ from mythinking.state import (
     EvidenceKind,
     IdeaBranch,
     ProjectState,
+    ResearcherAnalysis,
+    ResearchTask,
+    ResearchTaskStatus,
     SynthesizerAnalysis,
     TangentDisposition,
     ThinkingMode,
@@ -153,4 +156,37 @@ def test_supervisor_adds_default_converge_question_when_model_omits_one() -> Non
     assert reply.question == (
         "Does this recommended choice work, or should we keep comparing options?"
     )
+    assert reply.question in reply.message
+
+
+def test_supervisor_renders_open_research_tasks_into_the_prompt() -> None:
+    model = FakeModel({"message": "Noted.", "question": ""})
+    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
+    project_state.research_tasks = [
+        ResearchTask(question="Do we ship weekly?", status=ResearchTaskStatus.OPEN)
+    ]
+
+    agent.respond(project_state, "What should we focus on next?")
+
+    rendered = model.structured_model.rendered_prompt.lower()
+    assert "do we ship weekly?" in rendered
+
+
+def test_supervisor_adds_default_research_question_when_model_omits_one() -> None:
+    model = FakeModel({"message": "Here is what I found.", "question": ""})
+    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    project_state = ProjectState(current_mode=ThinkingMode.RESEARCH)
+    research_analysis = ResearcherAnalysis(
+        answer="We ship every Friday according to the changelog.",
+        task_resolved=True,
+    )
+
+    reply = agent.respond(
+        project_state,
+        "Can you research whether we ship weekly?",
+        research_analysis=research_analysis,
+    )
+
+    assert reply.question == "Does this research answer hold up, or should we keep digging?"
     assert reply.question in reply.message

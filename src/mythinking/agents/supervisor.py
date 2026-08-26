@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from mythinking.evidence import format_evidence_ledger
 from mythinking.exploration import format_branch_alternatives
 from mythinking.prompts import PromptRegistry
+from mythinking.research import format_open_research_tasks
 from mythinking.state import (
     AssistantTurn,
     BranchCommand,
@@ -16,6 +17,7 @@ from mythinking.state import (
     ExplorerAnalysis,
     FrameAnalysis,
     ProjectState,
+    ResearcherAnalysis,
     SynthesizerAnalysis,
     TangentDisposition,
     ThinkingMode,
@@ -54,6 +56,7 @@ class SupervisorAgent:
         branch_command: BranchCommand | None = None,
         exploration_analysis: ExplorerAnalysis | None = None,
         synthesis: SynthesizerAnalysis | None = None,
+        research_analysis: ResearcherAnalysis | None = None,
     ) -> AssistantTurn:
         prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
         rendered = prompt.render(
@@ -85,6 +88,12 @@ class SupervisorAgent:
                 "synthesis": (
                     synthesis.model_dump_json(indent=2) if synthesis is not None else "null"
                 ),
+                "open_research_tasks": format_open_research_tasks(project_state),
+                "research_analysis": (
+                    research_analysis.model_dump_json(indent=2)
+                    if research_analysis is not None
+                    else "null"
+                ),
             }
         )
         structured_model = self.model.with_structured_output(SupervisorReply)
@@ -111,6 +120,13 @@ class SupervisorAgent:
             and synthesis.recommended_choice.strip()
         ):
             question = "Does this recommended choice work, or should we keep comparing options?"
+        if (
+            project_state.current_mode is ThinkingMode.RESEARCH
+            and not question
+            and research_analysis is not None
+            and research_analysis.answer.strip()
+        ):
+            question = "Does this research answer hold up, or should we keep digging?"
         message = reply.message.strip()
         if question and question not in message:
             message = f"{message}\n\n{question}"

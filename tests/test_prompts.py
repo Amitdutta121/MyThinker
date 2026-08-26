@@ -22,7 +22,7 @@ def test_prompt_registry_loads_research_metadata() -> None:
 def test_latest_prompt_version_is_selected() -> None:
     prompt = PromptRegistry(PROMPT_DIR).get("lead_partner")
 
-    assert prompt.version == 5
+    assert prompt.version == 6
 
 
 def test_prompt_render_requires_all_variables() -> None:
@@ -39,5 +39,7 @@ def test_prompt_render_requires_all_variables() -> None:
                 "branch_alternatives": "No alternatives captured yet.",
                 "exploration_analysis": "null",
                 "synthesis": "null",
+                "open_research_tasks": "No open research tasks.",
+                "research_analysis": "null",
             }
         )

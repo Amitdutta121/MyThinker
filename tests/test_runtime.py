@@ -24,6 +24,9 @@ from mythinking.state import (
     IdeaBranch,
     NorthStarUpdate,
     ProjectState,
+    ResearcherAnalysis,
+    ResearchTask,
+    ResearchTaskStatus,
     SynthesizerAnalysis,
     ThinkingMode,
 )
@@ -96,6 +99,23 @@ class StubSynthesizer:
         return self.analysis
 
 
+class StubResearcher:
+    """Deterministic stand-in that finds no evidence unless configured to."""
+
+    def __init__(self, analysis: ResearcherAnalysis | None = None) -> None:
+        self.analysis = analysis or ResearcherAnalysis()
+        self.calls: list[tuple[str, str]] = []
+
+    def analyze(
+        self,
+        project_state: ProjectState,
+        user_message: str,
+        research_task: ResearchTask | None = None,
+    ) -> ResearcherAnalysis:
+        self.calls.append((project_state.project_id, user_message))
+        return self.analysis
+
+
 class RecordingSupervisor:
     def __init__(self) -> None:
         self.calls: list[
@@ -108,6 +128,7 @@ class RecordingSupervisor:
                 BranchCommand | None,
                 ExplorerAnalysis | None,
                 SynthesizerAnalysis | None,
+                ResearcherAnalysis | None,
             ]
         ] = []
 
@@ -120,6 +141,7 @@ class RecordingSupervisor:
         branch_command: BranchCommand | None = None,
         exploration_analysis: ExplorerAnalysis | None = None,
         synthesis: SynthesizerAnalysis | None = None,
+        research_analysis: ResearcherAnalysis | None = None,
     ) -> AssistantTurn:
         self.calls.append(
             (
@@ -131,6 +153,7 @@ class RecordingSupervisor:
                 branch_command,
                 exploration_analysis,
                 synthesis,
+                research_analysis,
             )
         )
         question = frame_analysis.recommended_question if frame_analysis else ""
@@ -153,6 +176,7 @@ def _build_runtime(
     evidence_ledger: EvidenceLedger | None = None,
     explorer: StubExplorer | None = None,
     synthesizer: StubSynthesizer | None = None,
+    researcher: StubResearcher | None = None,
 ) -> ThinkingRuntime:
     settings = Settings(
         _env_file=None,
@@ -169,6 +193,7 @@ def _build_runtime(
         evidence_ledger=evidence_ledger or EvidenceLedger(),
         explorer=explorer or StubExplorer(),
         synthesizer=synthesizer or StubSynthesizer(),
+        researcher=researcher or StubResearcher(),
     )
 
 
@@ -553,6 +578,61 @@ def test_run_turn_converges_alternatives_on_explicit_converge_request(tmp_path: 
     assert saved is not None
     assert saved.branches[0].status is BranchStatus.MERGED
     assert saved.north_star.current_hypothesis == "Start with the newsletter"
+
+
+def test_run_turn_answers_scoped_research_request_and_resolves_task(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    researcher = StubResearcher(
+        ResearcherAnalysis(
+            findings_to_add=[
+                EvidenceDraft(
+                    claim="The changelog shows weekly releases",
+                    kind=EvidenceKind.FACT,
+                    source_title="Internal changelog",
+                )
+            ],
+            task_resolved=True,
+        )
+    )
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+        researcher=researcher,
+    )
+    seed_turn = runtime.run_turn(
+        "I need a better way to keep product idea notes focused for solo founders."
+    )
+
+    project_state = runtime.get_project_state(seed_turn.project_id)
+    assert project_state is not None
+    task = ResearchTask(question="Do we ship weekly?")
+    project_state.research_tasks.append(task)
+    runtime.repository.save(project_state)
+
+    turn = runtime.run_turn(
+        "Can you research whether we ship weekly?",
+        project_id=seed_turn.project_id,
+    )
+    saved = runtime.get_project_state(seed_turn.project_id)
+
+    assert researcher.calls
+    assert turn.mode is ThinkingMode.RESEARCH
+    assert saved is not None
+    assert len(frame_analyst.calls) == 1
+    assert len(saved.evidence) == 1
+    assert saved.research_tasks[0].status is ResearchTaskStatus.ANSWERED
 
 
 def test_get_project_state_returns_none_for_unknown_project(tmp_path: Path) -> None:

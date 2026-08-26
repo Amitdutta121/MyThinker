@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from mythinking.agents.evidence_analyst import EvidenceAnalyst
 from mythinking.agents.explorer import Explorer
 from mythinking.agents.frame_analyst import FrameAnalyst
+from mythinking.agents.researcher import Researcher
 from mythinking.agents.supervisor import SupervisorAgent
 from mythinking.agents.synthesizer import Synthesizer
 from mythinking.branching import BranchManager, BranchSwitcher
@@ -15,6 +16,7 @@ from mythinking.drift import DriftDetector, DriftJudge, DriftResolver
 from mythinking.evidence import EvidenceLedger
 from mythinking.exploration import ConvergenceService, ExplorationManager, ExplorationRouter
 from mythinking.persistence import StateRepository
+from mythinking.research import ResearchImporter, ResearchRouter
 from mythinking.state import (
     Assumption,
     BranchCommandAction,
@@ -24,6 +26,9 @@ from mythinking.state import (
     FrameAnalysis,
     IntentAction,
     ProjectState,
+    ResearchIntent,
+    ResearchTask,
+    ResearchTrigger,
     SessionGraphState,
     ThinkingMode,
 )
@@ -45,6 +50,9 @@ def build_thinking_graph(
     exploration_router: ExplorationRouter | None = None,
     exploration_manager: ExplorationManager | None = None,
     convergence_service: ConvergenceService | None = None,
+    researcher: Researcher | None = None,
+    research_router: ResearchRouter | None = None,
+    research_importer: ResearchImporter | None = None,
     checkpointer: Any = None,
 ):
     workflow = StateGraph(SessionGraphState)
@@ -55,12 +63,16 @@ def build_thinking_graph(
     exploration_router = exploration_router or ExplorationRouter()
     exploration_manager = exploration_manager or ExplorationManager()
     convergence_service = convergence_service or ConvergenceService()
+    research_router = research_router or ResearchRouter()
+    research_importer = research_importer or ResearchImporter()
 
     workflow.add_node("capture", capture_node)
     workflow.add_node("handle_branch_command", _branch_command_node(branch_switcher))
     workflow.add_node("route_exploration", _route_exploration_node(exploration_router))
     workflow.add_node("explore", _explore_node(explorer, exploration_manager))
     workflow.add_node("converge", _converge_node(synthesizer, convergence_service))
+    workflow.add_node("route_research", _route_research_node(research_router))
+    workflow.add_node("research", _research_node(researcher, research_importer))
     workflow.add_node("frame", _frame_node(frame_analyst))
     workflow.add_node("detect_drift", _drift_node(drift_resolver, branch_manager))
     workflow.add_node("extract_evidence", _evidence_node(evidence_analyst, evidence_ledger))
@@ -78,10 +90,16 @@ def build_thinking_graph(
     workflow.add_conditional_edges(
         "route_exploration",
         _route_after_exploration_intent,
-        {"explore": "explore", "converge": "converge", "none": "frame"},
+        {"explore": "explore", "converge": "converge", "none": "route_research"},
     )
     workflow.add_edge("explore", "choose_mode")
     workflow.add_edge("converge", "choose_mode")
+    workflow.add_conditional_edges(
+        "route_research",
+        _route_after_research_intent,
+        {"research": "research", "none": "frame"},
+    )
+    workflow.add_edge("research", "choose_mode")
     workflow.add_edge("frame", "detect_drift")
     workflow.add_edge("detect_drift", "extract_evidence")
     workflow.add_edge("extract_evidence", "choose_mode")
@@ -116,6 +134,7 @@ def choose_mode_node(state: SessionGraphState) -> dict[str, ProjectState]:
         state.frame_analysis,
         state.drift_assessment,
         state.exploration_intent,
+        state.research_intent,
     )
     return {"project_state": project_state}
 
@@ -130,6 +149,7 @@ def _respond_node(supervisor: SupervisorAgent):
             state.branch_command,
             state.exploration_analysis,
             state.synthesis,
+            state.research_analysis,
         )
         return {"assistant_turn": assistant_turn}
 
@@ -175,6 +195,44 @@ def _converge_node(synthesizer: Synthesizer | None, convergence_service: Converg
         return {"synthesis": analysis, "project_state": project_state}
 
     return run
+
+
+def _route_research_node(research_router: ResearchRouter):
+    def run(state: SessionGraphState) -> dict[str, ResearchIntent]:
+        intent = research_router.detect(state.project_state, state.user_message)
+        return {"research_intent": intent}
+
+    return run
+
+
+def _route_after_research_intent(state: SessionGraphState) -> str:
+    intent = state.research_intent
+    if intent is not None and intent.trigger is ResearchTrigger.EXPLICIT_REQUEST:
+        return "research"
+    return "none"
+
+
+def _research_node(researcher: Researcher | None, research_importer: ResearchImporter):
+    def run(state: SessionGraphState) -> dict[str, Any]:
+        if researcher is None:
+            return {}
+        intent = state.research_intent
+        research_task_id = intent.research_task_id if intent else ""
+        task = _find_research_task(state.project_state, research_task_id)
+        analysis = researcher.analyze(state.project_state, state.user_message, task)
+        project_state = research_importer.merge(state.project_state, research_task_id, analysis)
+        return {"research_analysis": analysis, "project_state": project_state}
+
+    return run
+
+
+def _find_research_task(project_state: ProjectState, research_task_id: str) -> ResearchTask | None:
+    if not research_task_id:
+        return None
+    return next(
+        (task for task in project_state.research_tasks if task.id == research_task_id),
+        None,
+    )
 
 
 def _branch_command_node(branch_switcher: BranchSwitcher):
@@ -239,6 +297,7 @@ def choose_mode(
     frame_analysis: FrameAnalysis | None = None,
     drift_assessment: DriftAssessment | None = None,
     exploration_intent: ExplorationIntent | None = None,
+    research_intent: ResearchIntent | None = None,
 ) -> ThinkingMode:
     if drift_assessment and drift_assessment.status is DriftStatus.DRIFTED:
         return ThinkingMode.CHALLENGE
@@ -247,6 +306,8 @@ def choose_mode(
             return ThinkingMode.EXPLORE
         if exploration_intent.action is IntentAction.CONVERGE:
             return ThinkingMode.CONVERGE
+    if research_intent is not None and research_intent.trigger is ResearchTrigger.EXPLICIT_REQUEST:
+        return ThinkingMode.RESEARCH
 
     north_star = project_state.north_star
     missing_core_frame = any(
