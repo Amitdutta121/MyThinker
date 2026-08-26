@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from mythinking.evidence import format_evidence_ledger
+from mythinking.exploration import format_branch_alternatives
 from mythinking.prompts import PromptRegistry
 from mythinking.state import (
     AssistantTurn,
@@ -12,8 +13,10 @@ from mythinking.state import (
     BranchCommandAction,
     DriftAssessment,
     DriftStatus,
+    ExplorerAnalysis,
     FrameAnalysis,
     ProjectState,
+    SynthesizerAnalysis,
     TangentDisposition,
     ThinkingMode,
 )
@@ -49,6 +52,8 @@ class SupervisorAgent:
         frame_analysis: FrameAnalysis | None = None,
         drift_assessment: DriftAssessment | None = None,
         branch_command: BranchCommand | None = None,
+        exploration_analysis: ExplorerAnalysis | None = None,
+        synthesis: SynthesizerAnalysis | None = None,
     ) -> AssistantTurn:
         prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
         rendered = prompt.render(
@@ -71,6 +76,15 @@ class SupervisorAgent:
                     else "null"
                 ),
                 "evidence_ledger": format_evidence_ledger(project_state),
+                "branch_alternatives": format_branch_alternatives(project_state),
+                "exploration_analysis": (
+                    exploration_analysis.model_dump_json(indent=2)
+                    if exploration_analysis is not None
+                    else "null"
+                ),
+                "synthesis": (
+                    synthesis.model_dump_json(indent=2) if synthesis is not None else "null"
+                ),
             }
         )
         structured_model = self.model.with_structured_output(SupervisorReply)
@@ -90,6 +104,13 @@ class SupervisorAgent:
             and drift_assessment.status is DriftStatus.DRIFTED
         ):
             question = _challenge_question(drift_assessment)
+        if (
+            project_state.current_mode is ThinkingMode.CONVERGE
+            and not question
+            and synthesis is not None
+            and synthesis.recommended_choice.strip()
+        ):
+            question = "Does this recommended choice work, or should we keep comparing options?"
         message = reply.message.strip()
         if question and question not in message:
             message = f"{message}\n\n{question}"

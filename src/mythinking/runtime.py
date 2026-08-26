@@ -3,8 +3,10 @@
 from pathlib import Path
 
 from mythinking.agents.evidence_analyst import EvidenceAnalyst
+from mythinking.agents.explorer import Explorer
 from mythinking.agents.frame_analyst import FrameAnalyst
 from mythinking.agents.supervisor import SupervisorAgent
+from mythinking.agents.synthesizer import Synthesizer
 from mythinking.branching import BranchSwitcher
 from mythinking.config import Settings, get_settings
 from mythinking.drift import DriftJudge
@@ -32,6 +34,8 @@ class ThinkingRuntime:
         branch_switcher: BranchSwitcher | None = None,
         evidence_analyst: EvidenceAnalyst | None = None,
         evidence_ledger: EvidenceLedger | None = None,
+        explorer: Explorer | None = None,
+        synthesizer: Synthesizer | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.repository = repository or StateRepository(self.settings.state_database_path)
@@ -57,6 +61,14 @@ class ThinkingRuntime:
             create_chat_model(self.settings),
         )
         self.evidence_ledger = evidence_ledger or EvidenceLedger()
+        self.explorer = explorer or Explorer(
+            self.prompt_registry,
+            create_chat_model(self.settings),
+        )
+        self.synthesizer = synthesizer or Synthesizer(
+            self.prompt_registry,
+            create_chat_model(self.settings),
+        )
 
     def run_turn(self, user_message: str, project_id: str | None = None) -> AssistantTurn:
         message = user_message.strip()
@@ -78,6 +90,8 @@ class ThinkingRuntime:
                 branch_switcher=self.branch_switcher,
                 evidence_analyst=self.evidence_analyst,
                 evidence_ledger=self.evidence_ledger,
+                explorer=self.explorer,
+                synthesizer=self.synthesizer,
                 checkpointer=checkpointer,
             )
             result = graph.invoke(

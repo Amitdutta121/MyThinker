@@ -5,11 +5,15 @@ from mythinking.prompts import PromptRegistry
 from mythinking.state import (
     BranchCommand,
     BranchCommandAction,
+    BranchStatus,
+    ConvergenceOption,
     DriftAssessment,
     DriftStatus,
     EvidenceItem,
     EvidenceKind,
+    IdeaBranch,
     ProjectState,
+    SynthesizerAnalysis,
     TangentDisposition,
     ThinkingMode,
 )
@@ -110,3 +114,43 @@ def test_supervisor_renders_the_evidence_ledger_into_the_prompt() -> None:
     rendered = model.structured_model.rendered_prompt.lower()
     assert "hypotheses (unverified)" in rendered
     assert "remote work always reduces innovation" in rendered
+
+
+def test_supervisor_renders_branch_alternatives_into_the_prompt() -> None:
+    model = FakeModel({"message": "Here are the options.", "question": ""})
+    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    project_state = ProjectState(current_mode=ThinkingMode.EXPLORE)
+    project_state.branches = [
+        IdeaBranch(
+            name="Newsletter Idea",
+            summary="Start a newsletter for solo founders",
+            status=BranchStatus.ACTIVE,
+        )
+    ]
+
+    agent.respond(project_state, "Give me some alternatives.")
+
+    rendered = model.structured_model.rendered_prompt.lower()
+    assert "newsletter idea" in rendered
+    assert "start a newsletter for solo founders" in rendered
+
+
+def test_supervisor_adds_default_converge_question_when_model_omits_one() -> None:
+    model = FakeModel({"message": "Here is the tradeoff comparison.", "question": ""})
+    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    project_state = ProjectState(current_mode=ThinkingMode.CONVERGE)
+    synthesis = SynthesizerAnalysis(
+        options_considered=[ConvergenceOption(branch_name="Newsletter Idea")],
+        recommended_choice="Start with the newsletter",
+    )
+
+    reply = agent.respond(
+        project_state,
+        "Help me decide between these options.",
+        synthesis=synthesis,
+    )
+
+    assert reply.question == (
+        "Does this recommended choice work, or should we keep comparing options?"
+    )
+    assert reply.question in reply.message

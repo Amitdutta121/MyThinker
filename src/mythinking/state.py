@@ -78,6 +78,12 @@ class ResearchTaskStatus(StrEnum):
     DROPPED = "dropped"
 
 
+class IntentAction(StrEnum):
+    NONE = "none"
+    EXPLORE = "explore"
+    CONVERGE = "converge"
+
+
 class NorthStar(BaseModel):
     """The compact goal representation kept visible throughout a project."""
 
@@ -205,6 +211,44 @@ class EvidenceAnalysis(BaseModel):
     research_tasks_to_add: list[ResearchTaskDraft] = Field(default_factory=list)
 
 
+class AlternativeDraft(BaseModel):
+    """Structured alternative candidate before it is merged into persisted state."""
+
+    name: str
+    summary: str = ""
+    relationship_to_goal: str = ""
+
+
+class ExplorerAnalysis(BaseModel):
+    """Structured divergent-alternatives update used by the M4 graph."""
+
+    summary: str = ""
+    alternatives_to_add: list[AlternativeDraft] = Field(default_factory=list)
+
+
+class ConvergenceOption(BaseModel):
+    """A branch the Synthesizer weighed while converging toward a recommendation."""
+
+    branch_name: str
+    tradeoffs: str = ""
+
+
+class SynthesizerAnalysis(BaseModel):
+    """Structured convergence update used by the M4 graph."""
+
+    summary: str = ""
+    options_considered: list[ConvergenceOption] = Field(default_factory=list)
+    recommended_choice: str = ""
+    rationale: str = ""
+
+
+class ExplorationIntent(BaseModel):
+    """Deterministic classification of an explicit explore/converge request."""
+
+    action: IntentAction = IntentAction.NONE
+    matched_text: str = ""
+
+
 class DriftAssessment(BaseModel):
     """Drift classification for the current turn, deterministic or model-resolved."""
 
@@ -286,4 +330,7 @@ class SessionGraphState(BaseModel):
     frame_analysis: FrameAnalysis | None = None
     drift_assessment: DriftAssessment | None = None
     evidence_analysis: EvidenceAnalysis | None = None
+    exploration_intent: ExplorationIntent | None = None
+    exploration_analysis: ExplorerAnalysis | None = None
+    synthesis: SynthesizerAnalysis | None = None
     assistant_turn: AssistantTurn | None = None

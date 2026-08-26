@@ -22,7 +22,7 @@ def test_prompt_registry_loads_research_metadata() -> None:
 def test_latest_prompt_version_is_selected() -> None:
     prompt = PromptRegistry(PROMPT_DIR).get("lead_partner")
 
-    assert prompt.version == 4
+    assert prompt.version == 5
 
 
 def test_prompt_render_requires_all_variables() -> None:
@@ -36,5 +36,8 @@ def test_prompt_render_requires_all_variables() -> None:
                 "drift_assessment": "null",
                 "branch_command": "null",
                 "evidence_ledger": "No evidence captured yet.",
+                "branch_alternatives": "No alternatives captured yet.",
+                "exploration_analysis": "null",
+                "synthesis": "null",
             }
         )

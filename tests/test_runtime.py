@@ -8,19 +8,23 @@ from mythinking.config import Settings
 from mythinking.evidence import EvidenceLedger
 from mythinking.runtime import ThinkingRuntime, create_runtime
 from mythinking.state import (
+    AlternativeDraft,
     AssistantTurn,
     BranchCommand,
     BranchStatus,
+    ConvergenceOption,
     DriftAssessment,
     DriftSignal,
     DriftStatus,
     EvidenceAnalysis,
     EvidenceDraft,
     EvidenceKind,
+    ExplorerAnalysis,
     FrameAnalysis,
     IdeaBranch,
     NorthStarUpdate,
     ProjectState,
+    SynthesizerAnalysis,
     ThinkingMode,
 )
 
@@ -68,6 +72,30 @@ class SequenceFrameAnalyst:
         return self.analyses[len(self.calls) - 1]
 
 
+class StubExplorer:
+    """Deterministic stand-in that proposes no alternatives unless configured to."""
+
+    def __init__(self, analysis: ExplorerAnalysis | None = None) -> None:
+        self.analysis = analysis or ExplorerAnalysis()
+        self.calls: list[tuple[str, str]] = []
+
+    def analyze(self, project_state: ProjectState, user_message: str) -> ExplorerAnalysis:
+        self.calls.append((project_state.project_id, user_message))
+        return self.analysis
+
+
+class StubSynthesizer:
+    """Deterministic stand-in that converges nothing unless configured to."""
+
+    def __init__(self, analysis: SynthesizerAnalysis | None = None) -> None:
+        self.analysis = analysis or SynthesizerAnalysis()
+        self.calls: list[tuple[str, str]] = []
+
+    def analyze(self, project_state: ProjectState, user_message: str) -> SynthesizerAnalysis:
+        self.calls.append((project_state.project_id, user_message))
+        return self.analysis
+
+
 class RecordingSupervisor:
     def __init__(self) -> None:
         self.calls: list[
@@ -78,6 +106,8 @@ class RecordingSupervisor:
                 FrameAnalysis | None,
                 DriftAssessment | None,
                 BranchCommand | None,
+                ExplorerAnalysis | None,
+                SynthesizerAnalysis | None,
             ]
         ] = []
 
@@ -88,6 +118,8 @@ class RecordingSupervisor:
         frame_analysis: FrameAnalysis | None = None,
         drift_assessment: DriftAssessment | None = None,
         branch_command: BranchCommand | None = None,
+        exploration_analysis: ExplorerAnalysis | None = None,
+        synthesis: SynthesizerAnalysis | None = None,
     ) -> AssistantTurn:
         self.calls.append(
             (
@@ -97,6 +129,8 @@ class RecordingSupervisor:
                 frame_analysis,
                 drift_assessment,
                 branch_command,
+                exploration_analysis,
+                synthesis,
             )
         )
         question = frame_analysis.recommended_question if frame_analysis else ""
@@ -117,6 +151,8 @@ def _build_runtime(
     branch_switcher: BranchSwitcher | None = None,
     evidence_analyst: StubEvidenceAnalyst | None = None,
     evidence_ledger: EvidenceLedger | None = None,
+    explorer: StubExplorer | None = None,
+    synthesizer: StubSynthesizer | None = None,
 ) -> ThinkingRuntime:
     settings = Settings(
         _env_file=None,
@@ -131,6 +167,8 @@ def _build_runtime(
         branch_switcher=branch_switcher or BranchSwitcher(),
         evidence_analyst=evidence_analyst or StubEvidenceAnalyst(),
         evidence_ledger=evidence_ledger or EvidenceLedger(),
+        explorer=explorer or StubExplorer(),
+        synthesizer=synthesizer or StubSynthesizer(),
     )
 
 
@@ -419,6 +457,102 @@ def test_run_turn_writes_extracted_evidence_into_project_state(tmp_path: Path) -
     assert len(saved.evidence) == 1
     assert saved.evidence[0].kind is EvidenceKind.HYPOTHESIS
     assert saved.evidence[0].claim == "Remote work always reduces innovation"
+
+
+def test_run_turn_generates_alternatives_on_explicit_explore_request(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    explorer = StubExplorer(
+        ExplorerAnalysis(
+            alternatives_to_add=[
+                AlternativeDraft(name="Newsletter", summary="Start a weekly newsletter"),
+            ]
+        )
+    )
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+        explorer=explorer,
+    )
+    seed_turn = runtime.run_turn(
+        "I need a better way to keep product idea notes focused for solo founders."
+    )
+
+    turn = runtime.run_turn(
+        "Give me some alternatives for this.",
+        project_id=seed_turn.project_id,
+    )
+    saved = runtime.get_project_state(seed_turn.project_id)
+
+    assert explorer.calls
+    assert turn.mode is ThinkingMode.EXPLORE
+    assert saved is not None
+    assert len(frame_analyst.calls) == 1
+    assert [branch.name for branch in saved.branches] == ["Newsletter"]
+
+
+def test_run_turn_converges_alternatives_on_explicit_converge_request(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    synthesizer = StubSynthesizer(
+        SynthesizerAnalysis(
+            options_considered=[ConvergenceOption(branch_name="Newsletter Idea")],
+            recommended_choice="Start with the newsletter",
+        )
+    )
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+        synthesizer=synthesizer,
+    )
+    seed_turn = runtime.run_turn(
+        "I need a better way to keep product idea notes focused for solo founders."
+    )
+
+    project_state = runtime.get_project_state(seed_turn.project_id)
+    assert project_state is not None
+    project_state.branches.append(
+        IdeaBranch(
+            name="Newsletter Idea",
+            summary="Start a newsletter for solo founders",
+            status=BranchStatus.ACTIVE,
+        )
+    )
+    runtime.repository.save(project_state)
+
+    turn = runtime.run_turn(
+        "Help me decide between these options.",
+        project_id=seed_turn.project_id,
+    )
+    saved = runtime.get_project_state(seed_turn.project_id)
+
+    assert synthesizer.calls
+    assert turn.mode is ThinkingMode.CONVERGE
+    assert saved is not None
+    assert saved.branches[0].status is BranchStatus.MERGED
+    assert saved.north_star.current_hypothesis == "Start with the newsletter"
 
 
 def test_get_project_state_returns_none_for_unknown_project(tmp_path: Path) -> None:

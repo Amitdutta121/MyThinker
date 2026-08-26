@@ -8,20 +8,25 @@ from mythinking.graph import (
 )
 from mythinking.persistence import StateRepository
 from mythinking.state import (
+    AlternativeDraft,
     AssistantTurn,
     AssumptionDraft,
     BranchCommand,
     BranchStatus,
+    ConvergenceOption,
     DriftAssessment,
     DriftStatus,
     EvidenceAnalysis,
     EvidenceDraft,
     EvidenceKind,
+    ExplorerAnalysis,
     FrameAnalysis,
     IdeaBranch,
+    IntentAction,
     NorthStarUpdate,
     ProjectState,
     SessionGraphState,
+    SynthesizerAnalysis,
     ThinkingMode,
 )
 
@@ -45,6 +50,8 @@ class FakeSupervisor:
                 FrameAnalysis | None,
                 DriftAssessment | None,
                 BranchCommand | None,
+                ExplorerAnalysis | None,
+                SynthesizerAnalysis | None,
             ]
         ] = []
 
@@ -55,9 +62,19 @@ class FakeSupervisor:
         frame_analysis: FrameAnalysis | None = None,
         drift_assessment: DriftAssessment | None = None,
         branch_command: BranchCommand | None = None,
+        exploration_analysis: ExplorerAnalysis | None = None,
+        synthesis: SynthesizerAnalysis | None = None,
     ) -> AssistantTurn:
         self.calls.append(
-            (project_state, user_message, frame_analysis, drift_assessment, branch_command)
+            (
+                project_state,
+                user_message,
+                frame_analysis,
+                drift_assessment,
+                branch_command,
+                exploration_analysis,
+                synthesis,
+            )
         )
         question = frame_analysis.recommended_question if frame_analysis else ""
         return AssistantTurn(
@@ -460,3 +477,125 @@ def test_build_thinking_graph_skips_evidence_extraction_for_branch_commands(
 
     assert evidence_analyst.calls == []
     assert result.evidence_analysis is None
+
+
+class FakeExplorer:
+    def __init__(self, analysis: ExplorerAnalysis) -> None:
+        self.analysis = analysis
+        self.calls: list[tuple[ProjectState, str]] = []
+
+    def analyze(self, project_state: ProjectState, user_message: str) -> ExplorerAnalysis:
+        self.calls.append((project_state, user_message))
+        return self.analysis
+
+
+class FakeSynthesizer:
+    def __init__(self, analysis: SynthesizerAnalysis) -> None:
+        self.analysis = analysis
+        self.calls: list[tuple[ProjectState, str]] = []
+
+    def analyze(self, project_state: ProjectState, user_message: str) -> SynthesizerAnalysis:
+        self.calls.append((project_state, user_message))
+        return self.analysis
+
+
+def test_build_thinking_graph_routes_explore_requests_and_adds_branches(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    explorer = FakeExplorer(
+        ExplorerAnalysis(
+            alternatives_to_add=[
+                AlternativeDraft(name="Newsletter", summary="Start a weekly newsletter"),
+                AlternativeDraft(name="Community", summary="Start a paid community"),
+            ]
+        )
+    )
+    graph = build_thinking_graph(
+        frame_analyst,
+        supervisor,
+        repository,
+        explorer=explorer,
+    )
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="Can you give me some alternatives for this idea?",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert explorer.calls
+    assert frame_analyst.calls == []
+    assert result.exploration_intent is not None
+    assert result.exploration_intent.action is IntentAction.EXPLORE
+    assert result.project_state.current_mode is ThinkingMode.EXPLORE
+    assert [branch.name for branch in result.project_state.branches] == [
+        "Newsletter",
+        "Community",
+    ]
+
+
+def test_build_thinking_graph_routes_converge_requests_and_merges_branches(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    synthesizer = FakeSynthesizer(
+        SynthesizerAnalysis(
+            options_considered=[ConvergenceOption(branch_name="Newsletter Idea")],
+            recommended_choice="Start with the newsletter",
+        )
+    )
+    graph = build_thinking_graph(
+        frame_analyst,
+        supervisor,
+        repository,
+        synthesizer=synthesizer,
+    )
+
+    project_state = _anchored_project_state()
+    project_state.branches = [
+        IdeaBranch(
+            name="Newsletter Idea",
+            summary="Start a newsletter for solo founders",
+            status=BranchStatus.ACTIVE,
+        )
+    ]
+    initial_state = SessionGraphState(
+        project_state=project_state,
+        user_message="Help me decide between these options.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert synthesizer.calls
+    assert frame_analyst.calls == []
+    assert result.exploration_intent is not None
+    assert result.exploration_intent.action is IntentAction.CONVERGE
+    assert result.project_state.current_mode is ThinkingMode.CONVERGE
+    assert result.project_state.branches[0].status is BranchStatus.MERGED
+    assert result.project_state.north_star.current_hypothesis == "Start with the newsletter"
+
+
+def test_build_thinking_graph_skips_explore_and_converge_without_specialists(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="Can you give me some alternatives for this idea?",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert result.exploration_analysis is None
+    assert result.project_state.branches == []
+    assert result.project_state.current_mode is ThinkingMode.EXPLORE
