@@ -90,6 +90,25 @@ class StateRepository:
             ).fetchall()
         return [row["project_id"] for row in rows]
 
+    def list_recent(self, limit: int = 20) -> list[ProjectState]:
+        """Load the most recently updated project states, newest first."""
+
+        self.initialize()
+        with self._open_connection() as connection:
+            rows = connection.execute(
+                "SELECT state_json FROM project_states ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [ProjectState.model_validate_json(row["state_json"]) for row in rows]
+
+    def latest_project_id(self) -> str | None:
+        self.initialize()
+        with self._open_connection() as connection:
+            row = connection.execute(
+                "SELECT project_id FROM project_states ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+        return row["project_id"] if row else None
+
     def delete(self, project_id: str) -> bool:
         self.initialize()
         with self._open_connection() as connection:

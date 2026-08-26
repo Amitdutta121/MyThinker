@@ -53,6 +53,9 @@ request:
 uv run mythinking smoke-model
 uv run mythinking chat "I want help thinking through a product idea."
 uv run mythinking chat --project-id <existing-project-id> "Here is more context."
+uv run mythinking chat --last "Continue where I left off."
+uv run mythinking list
+uv run mythinking show <existing-project-id>
 ```
 
 The default model is OpenRouter's `~openai/gpt-latest` alias. Set
@@ -86,10 +89,11 @@ src/mythinking/
   state.py        Typed thinking and project state
   persistence.py  Project snapshots and LangGraph checkpoints
   prompts.py      Versioned prompt registry
-  graph.py        Runnable M1 LangGraph workflow
+  graph.py        Runnable LangGraph workflow
   runtime.py      Turn orchestration and persistence
-  agents/         Supervisor and Frame Analyst specialists
-  cli.py          Local setup, smoke, and chat commands
+  summary.py      Deterministic, offline session summary rendering
+  agents/         Supervisor and specialist agents
+  cli.py          Local setup, smoke, chat, list, and show commands
 prompts/           Research-linked prompt specifications
 evals/             Offline behavioral evaluation cases
 tests/             Deterministic unit tests

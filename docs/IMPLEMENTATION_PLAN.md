@@ -189,6 +189,14 @@ Acceptance criteria:
 - The user can stop and resume work without losing the thread.
 - Each session can finish with a decision, branch, or next experiment.
 
+Suggested slice order:
+
+- M6a: recent-session resume flow (`list`/`show` CLI commands, `chat --last`)
+  plus deterministic, offline session summaries
+- M6b: next-action planning (a Planner specialist that proposes structured
+  `NextAction` entries)
+- M6c: optional user profile extraction, off by default
+
 ### M7: UI layer
 
 Goal: add a minimal interface after the core workflow is stable.
