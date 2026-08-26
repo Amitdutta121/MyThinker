@@ -79,10 +79,33 @@ streaming has started (the HTTP status is already committed) is delivered as a
 terminal `{"type": "error", "detail": "..."}` event instead of a dropped
 connection.
 
+CORS is enabled for the local Next.js dev server (`http://localhost:3000` and
+`http://127.0.0.1:3000`, plus `:3001` for when `3000` is already taken and
+Next falls back to it).
+
 The default model is OpenRouter's `~openai/gpt-latest` alias. Set
 `OPENROUTER_MODEL` to any supported `provider/model` slug when you want a fixed
 model. Model availability, capabilities, and pricing should be checked in the
 [OpenRouter model catalog](https://openrouter.ai/models).
+
+## Frontend
+
+The immersive workspace UI (M7c) lives in `frontend/`, a Next.js/TypeScript
+app that talks to the API above over HTTP only:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+By default it targets `http://127.0.0.1:8000`; set `NEXT_PUBLIC_API_BASE_URL`
+(see `.env.local.example`) to point elsewhere. Run `uv run mythinking serve`
+in another terminal first so the app has something to talk to. See
+`frontend/README` structure notes in
+[docs/handoffs/2026-08-26-m7c-immersive-workspace.md](D:/MyThinking/docs/handoffs/2026-08-26-m7c-immersive-workspace.md)
+for the frontend layout and commands (`npm run typecheck`, `npm run test`,
+`npm run build`, `npm run generate:types`).
 
 ## Development
 
@@ -119,6 +142,7 @@ src/mythinking/
 prompts/           Research-linked prompt specifications
 evals/             Offline behavioral evaluation cases
 tests/             Deterministic unit tests
+frontend/          Next.js/TypeScript immersive workspace UI (M7c), HTTP-only
 ```
 
 OpenRouter's current LangChain integration uses `ChatOpenRouter` from the
@@ -141,10 +165,10 @@ capture -> frame -> detect_drift -> choose_mode -> respond -> persist
 ```
 
 The current slice includes the supervisor, Frame Analyst, and deterministic
-drift preservation. The `mythinking serve` HTTP API now exposes both a
+drift preservation. The `mythinking serve` HTTP API exposes both a
 non-streaming `POST /turns` (M7a) and a Server-Sent Events `POST /turns/stream`
-(M7b) over the same runtime; the immersive React/Next.js frontend (M7c) is
-still a later slice of M7.
+(M7b) over the same runtime, and `frontend/` (M7c) is a thin Next.js workspace
+UI over that same API — M7 is now complete end to end.
 
 ## Codex session rule
 

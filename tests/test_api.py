@@ -227,6 +227,23 @@ def test_get_project_returns_404_for_unknown_project() -> None:
     assert "missing" in response.json()["detail"]
 
 
+def test_cors_allows_the_frontend_dev_origin() -> None:
+    client = TestClient(create_app(FakeRuntime()))
+
+    response = client.get("/health", headers={"Origin": "http://localhost:3000"})
+
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_cors_allows_the_frontend_dev_fallback_port() -> None:
+    """Next.js falls back to :3001 when :3000 is already taken locally."""
+    client = TestClient(create_app(FakeRuntime()))
+
+    response = client.get("/health", headers={"Origin": "http://localhost:3001"})
+
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3001"
+
+
 def test_create_app_defaults_to_lazy_runtime_construction(monkeypatch) -> None:
     """Building the app (and hitting read-only routes) must not require an API key."""
 

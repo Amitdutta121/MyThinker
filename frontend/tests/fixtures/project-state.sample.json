@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "project_id": "proj-fixture-1",
+  "north_star": {
+    "title": "Personal knowledge base",
+    "problem_statement": "Notes are scattered across tools and hard to revisit.",
+    "desired_outcome": "One place to capture and resurface ideas.",
+    "beneficiary": "Me",
+    "constraints": ["Must work offline", "No new subscriptions"],
+    "success_criteria": ["Can find a note from 6 months ago in under a minute"],
+    "non_goals": ["Team collaboration features"],
+    "current_hypothesis": "A local-first app with full-text search is enough.",
+    "next_action": "Prototype a search index over existing notes."
+  },
+  "current_mode": "explore",
+  "active_branch_id": "branch-1",
+  "branches": [
+    {
+      "id": "branch-1",
+      "name": "Local-first app",
+      "summary": "SQLite-backed desktop app with full-text search.",
+      "relationship_to_goal": "Directly answers the core problem.",
+      "status": "active",
+      "revisit_trigger": "",
+      "created_at": "2026-08-20T10:00:00Z"
+    },
+    {
+      "id": "branch-2",
+      "name": "Browser extension clipper",
+      "summary": "Capture web pages into the same store.",
+      "relationship_to_goal": "Nice-to-have capture path, not core.",
+      "status": "parked",
+      "revisit_trigger": "After the core search flow works.",
+      "created_at": "2026-08-21T09:00:00Z"
+    }
+  ],
+  "assumptions": [],
+  "evidence": [
+    {
+      "id": "evidence-1",
+      "claim": "SQLite FTS5 handles 50k notes with sub-100ms search.",
+      "kind": "fact",
+      "source_url": "https://www.sqlite.org/fts5.html",
+      "source_title": "SQLite FTS5 docs",
+      "notes": "Confirmed in the docs' performance notes.",
+      "captured_at": "2026-08-22T12:00:00Z"
+    },
+    {
+      "id": "evidence-2",
+      "claim": "Most notes are never revisited after a week.",
+      "kind": "hypothesis",
+      "source_url": "",
+      "source_title": "",
+      "notes": "Based on personal recollection, not measured.",
+      "captured_at": "2026-08-21T08:00:00Z"
+    }
+  ],
+  "research_tasks": [],
+  "decisions": [
+    {
+      "id": "decision-1",
+      "question": "Sync between devices or single-device only?",
+      "choice": "Single-device for v1",
+      "rationale": "Sync adds conflict-resolution complexity not worth it yet.",
+      "alternatives": ["Add a sync service", "Use a shared cloud folder"],
+      "reversible": true,
+      "decided_at": "2026-08-23T15:00:00Z"
+    }
+  ],
+  "next_actions": [
+    {
+      "id": "next-1",
+      "description": "Prototype SQLite FTS5 search over 100 sample notes.",
+      "success_signal": "Search returns relevant results in under a second.",
+      "failure_signal": "Setup takes more than a day.",
+      "time_box_minutes": 60,
+      "implementation_intention": "This evening after dinner.",
+      "completed": false
+    }
+  ],
+  "open_questions": ["Should tags be freeform or structured?"],
+  "parked_ideas": ["Full-text search across PDFs too"],
+  "created_at": "2026-08-20T09:00:00Z",
+  "updated_at": "2026-08-23T15:00:00Z"
+}

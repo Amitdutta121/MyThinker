@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from datetime import datetime
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -54,6 +55,17 @@ def create_app(runtime: ThinkingRuntime | None = None) -> FastAPI:
 
     app = FastAPI(title="MyThinking API")
     app.state.runtime = runtime
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
+        ],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def get_runtime() -> ThinkingRuntime:
         if app.state.runtime is None:

@@ -1,0 +1,14 @@
+[
+  {
+    "project_id": "proj-fixture-1",
+    "updated_at": "2026-08-23T15:00:00Z",
+    "current_mode": "explore",
+    "title": "Personal knowledge base"
+  },
+  {
+    "project_id": "proj-fixture-2",
+    "updated_at": "2026-08-19T11:00:00Z",
+    "current_mode": "decide",
+    "title": "Weekend trip planning"
+  }
+]
