@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mythinking"
+version = "0.1.0"
+description = "A personal, stateful AI thinking partner"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "langchain>=1.0",
+  "langchain-openrouter>=0.1",
+  "langgraph>=1.0",
+  "langgraph-checkpoint-sqlite>=3.0",
+  "pydantic>=2.10",
+  "pydantic-settings>=2.7",
+  "pyyaml>=6.0.2",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-cov>=6.0",
+  "ruff>=0.9",
+]
+
+[project.scripts]
+mythinking = "mythinking.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mythinking"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
