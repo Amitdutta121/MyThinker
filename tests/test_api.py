@@ -1,7 +1,16 @@
+from collections.abc import Iterator
+
 from fastapi.testclient import TestClient
 
 from mythinking.api import create_app
-from mythinking.state import AssistantTurn, NorthStar, ProjectState, ThinkingMode
+from mythinking.state import (
+    AssistantTurn,
+    NorthStar,
+    ProjectState,
+    ThinkingMode,
+    TurnStreamEvent,
+    TurnStreamEventType,
+)
 
 
 class FakeRepository:
@@ -22,12 +31,17 @@ class FakeRuntime:
         project_states: dict[str, ProjectState] | None = None,
         recent_states: list[ProjectState] | None = None,
         error: Exception | None = None,
+        stream_events: Iterator[TurnStreamEvent] | list[TurnStreamEvent] | None = None,
+        stream_error: Exception | None = None,
     ) -> None:
         self.turn = turn
         self.project_states = project_states or {}
         self.error = error
         self.repository = FakeRepository(recent_states or [])
         self.calls: list[tuple[str, str | None]] = []
+        self.stream_events = stream_events
+        self.stream_error = stream_error
+        self.stream_calls: list[tuple[str, str | None]] = []
 
     def run_turn(self, message: str, project_id: str | None = None) -> AssistantTurn:
         self.calls.append((message, project_id))
@@ -35,6 +49,12 @@ class FakeRuntime:
             raise self.error
         assert self.turn is not None
         return self.turn
+
+    def stream_turn(self, message: str, project_id: str | None = None) -> Iterator[TurnStreamEvent]:
+        self.stream_calls.append((message, project_id))
+        if self.stream_error is not None:
+            raise self.stream_error
+        return iter(self.stream_events or [])
 
     def get_project_state(self, project_id: str) -> ProjectState | None:
         return self.project_states.get(project_id)
@@ -96,6 +116,70 @@ def test_create_turn_returns_404_for_unknown_project(monkeypatch) -> None:
 
     assert response.status_code == 404
     assert "missing" in response.json()["detail"]
+
+
+def test_create_turn_stream_emits_node_and_turn_events() -> None:
+    final_turn = AssistantTurn(project_id="proj-1", mode=ThinkingMode.CAPTURE, message="ok")
+    events = [
+        TurnStreamEvent(type=TurnStreamEventType.NODE, node="capture"),
+        TurnStreamEvent(
+            type=TurnStreamEventType.NODE, node="choose_mode", mode=ThinkingMode.CAPTURE
+        ),
+        TurnStreamEvent(type=TurnStreamEventType.TURN, turn=final_turn),
+    ]
+    runtime = FakeRuntime(stream_events=events)
+    client = TestClient(create_app(runtime))
+
+    response = client.post("/turns/stream", json={"message": "Help me think this through"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    frames = [frame for frame in response.text.split("\n\n") if frame]
+    assert len(frames) == 3
+    assert frames[0] == f"data: {events[0].model_dump_json()}"
+    last_event = TurnStreamEvent.model_validate_json(frames[-1].removeprefix("data: "))
+    assert last_event.type is TurnStreamEventType.TURN
+    assert last_event.turn is not None
+    assert last_event.turn.message == "ok"
+    assert runtime.stream_calls == [("Help me think this through", None)]
+
+
+def test_create_turn_stream_rejects_blank_message() -> None:
+    client = TestClient(create_app(FakeRuntime()))
+
+    response = client.post("/turns/stream", json={"message": ""})
+
+    assert response.status_code == 422
+
+
+def test_create_turn_stream_returns_404_for_unknown_project() -> None:
+    runtime = FakeRuntime(stream_error=KeyError("Unknown project_id: missing"))
+    client = TestClient(create_app(runtime))
+
+    response = client.post(
+        "/turns/stream", json={"message": "resume this", "project_id": "missing"}
+    )
+
+    assert response.status_code == 404
+    assert "missing" in response.json()["detail"]
+
+
+def test_create_turn_stream_converts_mid_stream_failure_into_an_error_event() -> None:
+    def failing_events() -> Iterator[TurnStreamEvent]:
+        yield TurnStreamEvent(type=TurnStreamEventType.NODE, node="capture")
+        raise RuntimeError("graph blew up")
+
+    runtime = FakeRuntime(stream_events=failing_events())
+    client = TestClient(create_app(runtime))
+
+    response = client.post("/turns/stream", json={"message": "go"})
+
+    assert response.status_code == 200
+    frames = [frame for frame in response.text.split("\n\n") if frame]
+    assert len(frames) == 2
+    last_event = TurnStreamEvent.model_validate_json(frames[-1].removeprefix("data: "))
+    assert last_event.type is TurnStreamEventType.ERROR
+    assert "graph blew up" in last_event.detail
 
 
 def test_list_projects_returns_summaries_newest_first() -> None:

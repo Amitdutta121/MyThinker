@@ -339,6 +339,29 @@ class AssistantTurn(BaseModel):
     question: str = ""
 
 
+class TurnStreamEventType(StrEnum):
+    NODE = "node"
+    TURN = "turn"
+    ERROR = "error"
+
+
+class TurnStreamEvent(BaseModel):
+    """One incremental event pushed while a turn streams through the graph.
+
+    `node`/`mode` are populated for `NODE` events (the graph node that just
+    ran, and the project's current mode if that node touched `project_state`).
+    `turn` is populated for the terminal `TURN` event. `detail` is populated
+    for `ERROR` events raised mid-stream, after the HTTP response has already
+    started, so it is delivered as data instead of an HTTP status.
+    """
+
+    type: TurnStreamEventType
+    node: str = ""
+    mode: ThinkingMode | None = None
+    turn: AssistantTurn | None = None
+    detail: str = ""
+
+
 class ProjectState(BaseModel):
     """Serializable source of truth for one thinking project."""
 

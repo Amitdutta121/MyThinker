@@ -31,6 +31,7 @@ from mythinking.state import (
     ResearchTaskStatus,
     SynthesizerAnalysis,
     ThinkingMode,
+    TurnStreamEventType,
 )
 
 
@@ -718,6 +719,90 @@ def test_run_turn_rejects_unknown_project_id(tmp_path: Path) -> None:
 
     with pytest.raises(KeyError, match="Unknown project_id"):
         runtime.run_turn("resume this", project_id="missing")
+
+
+def test_stream_turn_emits_node_events_and_a_final_turn_event(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Notes are scattered",
+                    desired_outcome="Capture a coherent frame",
+                    beneficiary="Founder",
+                )
+            )
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+    )
+
+    events = list(runtime.stream_turn("Help me structure this product idea"))
+
+    node_events = [event for event in events if event.type is TurnStreamEventType.NODE]
+    turn_events = [event for event in events if event.type is TurnStreamEventType.TURN]
+    assert node_events[0].node == "capture"
+    assert "persist" in [event.node for event in node_events]
+    assert len(turn_events) == 1
+    turn = turn_events[0].turn
+    assert turn is not None
+    assert turn.mode is ThinkingMode.CAPTURE
+    assert turn.message == "capture:Help me structure this product idea"
+
+    saved = runtime.get_project_state(turn.project_id)
+    assert saved is not None
+    assert saved.north_star.problem_statement == "Notes are scattered"
+
+
+def test_stream_turn_reports_current_mode_on_choose_mode_event(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Notes are scattered",
+                    desired_outcome="Capture a coherent frame",
+                    beneficiary="Founder",
+                )
+            )
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+    )
+
+    events = list(runtime.stream_turn("Help me structure this product idea"))
+
+    choose_mode_events = [event for event in events if event.node == "choose_mode"]
+    assert len(choose_mode_events) == 1
+    assert choose_mode_events[0].mode is ThinkingMode.CAPTURE
+
+
+def test_stream_turn_rejects_blank_message_before_yielding(tmp_path: Path) -> None:
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=SequenceFrameAnalyst([FrameAnalysis()]),
+        supervisor=RecordingSupervisor(),
+    )
+
+    with pytest.raises(ValueError, match="must not be blank"):
+        runtime.stream_turn("   ")
+
+
+def test_stream_turn_rejects_unknown_project_id_before_yielding(tmp_path: Path) -> None:
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=SequenceFrameAnalyst([FrameAnalysis()]),
+        supervisor=RecordingSupervisor(),
+    )
+
+    with pytest.raises(KeyError, match="Unknown project_id"):
+        runtime.stream_turn("resume this", project_id="missing")
 
 
 def test_create_runtime_honors_explicit_database_paths(

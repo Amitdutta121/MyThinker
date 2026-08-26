@@ -1,17 +1,26 @@
-"""HTTP API over `ThinkingRuntime` (M7a: non-streaming turns and state reads).
+"""HTTP API over `ThinkingRuntime` (M7a: non-streaming turns and state reads;
+M7b: SSE streaming of turns).
 
 This module is a thin adapter: every request maps directly onto an existing
 `ThinkingRuntime`/`StateRepository` method. It holds no business logic of its
 own, so the graph and specialists stay testable without the API running.
 """
 
+from collections.abc import Iterator
 from datetime import datetime
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from mythinking.runtime import ThinkingRuntime, create_runtime
-from mythinking.state import AssistantTurn, ProjectState, ThinkingMode
+from mythinking.state import (
+    AssistantTurn,
+    ProjectState,
+    ThinkingMode,
+    TurnStreamEvent,
+    TurnStreamEventType,
+)
 
 
 class TurnRequest(BaseModel):
@@ -67,6 +76,20 @@ def create_app(runtime: ThinkingRuntime | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/turns/stream")
+    def create_turn_stream(
+        request: TurnRequest,
+        runtime: ThinkingRuntime = Depends(get_runtime),
+    ) -> StreamingResponse:
+        try:
+            events = runtime.stream_turn(request.message, project_id=request.project_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return StreamingResponse(_encode_server_sent_events(events), media_type="text/event-stream")
+
     @app.get("/projects", response_model=list[ProjectSummary])
     def list_projects(
         limit: int = 20,
@@ -85,6 +108,24 @@ def create_app(runtime: ThinkingRuntime | None = None) -> FastAPI:
         return state
 
     return app
+
+
+def _encode_server_sent_events(events: Iterator[TurnStreamEvent]) -> Iterator[str]:
+    """Render each event as one `text/event-stream` frame.
+
+    Broad `except Exception` is deliberate here, not elsewhere: once
+    `StreamingResponse` has started sending its 200 OK, a mid-stream failure
+    (e.g. an OpenRouter call inside a specialist) can no longer become an
+    HTTP error status, so it is converted into a terminal `ERROR` event
+    instead of silently truncating the connection.
+    """
+
+    try:
+        for event in events:
+            yield f"data: {event.model_dump_json()}\n\n"
+    except Exception as exc:
+        error_event = TurnStreamEvent(type=TurnStreamEventType.ERROR, detail=str(exc))
+        yield f"data: {error_event.model_dump_json()}\n\n"
 
 
 app = create_app()

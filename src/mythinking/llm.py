@@ -23,6 +23,5 @@ def create_chat_model(
         temperature=runtime.temperature if temperature is None else temperature,
         max_tokens=max_tokens or runtime.max_tokens,
         max_retries=runtime.max_retries,
-        route="fallback",
         openrouter_provider={"data_collection": runtime.openrouter_data_collection},
     )

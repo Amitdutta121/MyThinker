@@ -26,6 +26,5 @@ def test_model_factory_uses_openrouter_configuration() -> None:
         temperature=0,
         max_tokens=512,
         max_retries=2,
-        route="fallback",
         openrouter_provider={"data_collection": "deny"},
     )

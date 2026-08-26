@@ -67,9 +67,17 @@ uv run mythinking serve
 ```text
 GET  /health                 liveness check
 POST /turns                  {"message": "...", "project_id": "..."} -> AssistantTurn
+POST /turns/stream           same request body -> text/event-stream of TurnStreamEvent frames
 GET  /projects?limit=20      recent project summaries, newest first
 GET  /projects/{project_id}  full ProjectState
 ```
+
+`POST /turns/stream` streams one Server-Sent Event per graph node as the turn
+runs (`{"type": "node", "node": "...", "mode": "..."}`), followed by a final
+`{"type": "turn", "turn": <AssistantTurn>}` event. A failure that happens after
+streaming has started (the HTTP status is already committed) is delivered as a
+terminal `{"type": "error", "detail": "..."}` event instead of a dropped
+connection.
 
 The default model is OpenRouter's `~openai/gpt-latest` alias. Set
 `OPENROUTER_MODEL` to any supported `provider/model` slug when you want a fixed
@@ -105,7 +113,7 @@ src/mythinking/
   graph.py        Runnable LangGraph workflow
   runtime.py      Turn orchestration and persistence
   summary.py      Deterministic, offline session summary rendering
-  api.py          HTTP API over the runtime (M7a: non-streaming)
+  api.py          HTTP API over the runtime (M7a non-streaming + M7b SSE streaming)
   agents/         Supervisor and specialist agents
   cli.py          Local setup, smoke, chat, list, show, and serve commands
 prompts/           Research-linked prompt specifications
@@ -133,9 +141,10 @@ capture -> frame -> detect_drift -> choose_mode -> respond -> persist
 ```
 
 The current slice includes the supervisor, Frame Analyst, and deterministic
-drift preservation. The `mythinking serve` HTTP API (M7a) is now available as a
-non-streaming adapter over the same runtime; streaming (M7b) and the immersive
-React/Next.js frontend (M7c) are still later slices of M7.
+drift preservation. The `mythinking serve` HTTP API now exposes both a
+non-streaming `POST /turns` (M7a) and a Server-Sent Events `POST /turns/stream`
+(M7b) over the same runtime; the immersive React/Next.js frontend (M7c) is
+still a later slice of M7.
 
 ## Codex session rule
 
