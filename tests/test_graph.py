@@ -10,6 +10,8 @@ from mythinking.persistence import StateRepository
 from mythinking.state import (
     AssistantTurn,
     AssumptionDraft,
+    DriftAssessment,
+    DriftStatus,
     FrameAnalysis,
     NorthStarUpdate,
     ProjectState,
@@ -30,15 +32,18 @@ class FakeFrameAnalyst:
 
 class FakeSupervisor:
     def __init__(self) -> None:
-        self.calls: list[tuple[ProjectState, str, FrameAnalysis | None]] = []
+        self.calls: list[
+            tuple[ProjectState, str, FrameAnalysis | None, DriftAssessment | None]
+        ] = []
 
     def respond(
         self,
         project_state: ProjectState,
         user_message: str,
         frame_analysis: FrameAnalysis | None = None,
+        drift_assessment: DriftAssessment | None = None,
     ) -> AssistantTurn:
-        self.calls.append((project_state, user_message, frame_analysis))
+        self.calls.append((project_state, user_message, frame_analysis, drift_assessment))
         question = frame_analysis.recommended_question if frame_analysis else ""
         return AssistantTurn(
             project_id=project_state.project_id,
@@ -62,9 +67,21 @@ def test_choose_mode_returns_capture_when_core_frame_is_present() -> None:
     project_state.north_star.desired_outcome = "A reusable thought process"
     project_state.north_star.beneficiary = "Solo founder"
 
-    mode = choose_mode(project_state, FrameAnalysis())
+    mode = choose_mode(project_state, FrameAnalysis(), None)
 
     assert mode is ThinkingMode.CAPTURE
+
+
+def test_choose_mode_returns_challenge_when_drift_is_detected() -> None:
+    project_state = ProjectState()
+
+    mode = choose_mode(
+        project_state,
+        FrameAnalysis(),
+        DriftAssessment(status=DriftStatus.DRIFTED),
+    )
+
+    assert mode is ThinkingMode.CHALLENGE
 
 
 def test_apply_frame_analysis_merges_and_deduplicates_updates() -> None:
@@ -143,6 +160,7 @@ def test_build_thinking_graph_runs_capture_flow_and_persists_state(tmp_path: Pat
     )
     assert frame_analyst.calls[0][1] == "I want a better way to think through product ideas"
     assert supervisor.calls[0][0].current_mode is ThinkingMode.CAPTURE
+    assert supervisor.calls[0][3] is not None
     assert saved is not None
     assert saved.current_mode is ThinkingMode.CAPTURE
     assert saved.north_star.problem_statement == "Manual thinking is inconsistent"
@@ -171,3 +189,62 @@ def test_build_thinking_graph_runs_clarify_flow_when_question_is_needed(
     assert result.assistant_turn is not None
     assert result.assistant_turn.mode is ThinkingMode.CLARIFY
     assert result.assistant_turn.question == "What specific decision are you trying to make?"
+
+
+def test_build_thinking_graph_preserves_detected_tangent_as_branch(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    project_state = ProjectState()
+    project_state.north_star.problem_statement = "Product idea notes are scattered"
+    project_state.north_star.desired_outcome = "Keep the idea thread focused"
+    project_state.north_star.beneficiary = "Solo founder"
+
+    initial_state = SessionGraphState(
+        project_state=project_state,
+        user_message="Tell me everything about vector databases.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert result.project_state.current_mode is ThinkingMode.CHALLENGE
+    assert result.drift_assessment is not None
+    assert result.drift_assessment.status is DriftStatus.DRIFTED
+    assert result.project_state.branches
+    assert result.project_state.branches[0].summary == "Tell me everything about vector databases"
+    assert result.project_state.branches[0].status.value == "parked"
+
+
+def test_build_thinking_graph_does_not_merge_tangent_frame_updates_into_north_star(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    analysis = FrameAnalysis(
+        north_star=NorthStarUpdate(current_hypothesis="Use vector databases for retrieval"),
+        open_questions_to_add=["Which vector database should I use?"],
+        recommended_question="Which vector database should I use?",
+    )
+    frame_analyst = FakeFrameAnalyst(analysis)
+    supervisor = FakeSupervisor()
+    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    project_state = ProjectState()
+    project_state.north_star.problem_statement = "Product idea notes are scattered"
+    project_state.north_star.desired_outcome = "Keep the idea thread focused"
+    project_state.north_star.beneficiary = "Solo founder"
+
+    initial_state = SessionGraphState(
+        project_state=project_state,
+        user_message="Tell me everything about vector databases.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert result.drift_assessment is not None
+    assert result.drift_assessment.status is DriftStatus.DRIFTED
+    assert result.project_state.north_star.current_hypothesis == ""
+    assert result.project_state.open_questions == []
+    assert result.project_state.branches
+    assert result.project_state.branches[0].summary == "Tell me everything about vector databases"

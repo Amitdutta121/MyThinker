@@ -20,11 +20,17 @@ def test_prompt_registry_loads_research_metadata() -> None:
 def test_latest_prompt_version_is_selected() -> None:
     prompt = PromptRegistry(PROMPT_DIR).get("lead_partner")
 
-    assert prompt.version == 1
+    assert prompt.version == 2
 
 
 def test_prompt_render_requires_all_variables() -> None:
     prompt = PromptRegistry(PROMPT_DIR).get("lead_partner")
 
     with pytest.raises(ValueError, match="user_message"):
-        prompt.render({"project_state": "{}"})
+        prompt.render(
+            {
+                "project_state": "{}",
+                "frame_analysis": "null",
+                "drift_assessment": "null",
+            }
+        )

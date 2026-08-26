@@ -1,4 +1,4 @@
-"""LangGraph workflow for the runnable M1 conversation loop."""
+"""LangGraph workflow for the runnable core loop plus M2a drift control."""
 
 from collections.abc import Iterable
 from typing import Any
@@ -7,9 +7,13 @@ from langgraph.graph import END, START, StateGraph
 
 from mythinking.agents.frame_analyst import FrameAnalyst
 from mythinking.agents.supervisor import SupervisorAgent
+from mythinking.branching import BranchManager
+from mythinking.drift import DriftDetector
 from mythinking.persistence import StateRepository
 from mythinking.state import (
     Assumption,
+    DriftAssessment,
+    DriftStatus,
     FrameAnalysis,
     ProjectState,
     SessionGraphState,
@@ -22,19 +26,25 @@ def build_thinking_graph(
     supervisor: SupervisorAgent,
     repository: StateRepository,
     *,
+    drift_detector: DriftDetector | None = None,
+    branch_manager: BranchManager | None = None,
     checkpointer: Any = None,
 ):
     workflow = StateGraph(SessionGraphState)
+    drift_detector = drift_detector or DriftDetector()
+    branch_manager = branch_manager or BranchManager()
 
     workflow.add_node("capture", capture_node)
     workflow.add_node("frame", _frame_node(frame_analyst))
+    workflow.add_node("detect_drift", _drift_node(drift_detector, branch_manager))
     workflow.add_node("choose_mode", choose_mode_node)
     workflow.add_node("respond", _respond_node(supervisor))
     workflow.add_node("persist", _persist_node(repository))
 
     workflow.add_edge(START, "capture")
     workflow.add_edge("capture", "frame")
-    workflow.add_edge("frame", "choose_mode")
+    workflow.add_edge("frame", "detect_drift")
+    workflow.add_edge("detect_drift", "choose_mode")
     workflow.add_edge("choose_mode", "respond")
     workflow.add_edge("respond", "persist")
     workflow.add_edge("persist", END)
@@ -50,12 +60,10 @@ def capture_node(state: SessionGraphState) -> dict[str, str]:
 
 
 def _frame_node(frame_analyst: FrameAnalyst):
-    def run(state: SessionGraphState) -> dict[str, FrameAnalysis | ProjectState]:
+    def run(state: SessionGraphState) -> dict[str, FrameAnalysis]:
         analysis = frame_analyst.analyze(state.project_state, state.user_message)
-        project_state = apply_frame_analysis(state.project_state, analysis)
         return {
             "frame_analysis": analysis,
-            "project_state": project_state,
         }
 
     return run
@@ -63,7 +71,11 @@ def _frame_node(frame_analyst: FrameAnalyst):
 
 def choose_mode_node(state: SessionGraphState) -> dict[str, ProjectState]:
     project_state = state.project_state.model_copy(deep=True)
-    project_state.current_mode = choose_mode(project_state, state.frame_analysis)
+    project_state.current_mode = choose_mode(
+        project_state,
+        state.frame_analysis,
+        state.drift_assessment,
+    )
     return {"project_state": project_state}
 
 
@@ -73,6 +85,7 @@ def _respond_node(supervisor: SupervisorAgent):
             state.project_state,
             state.user_message,
             state.frame_analysis,
+            state.drift_assessment,
         )
         return {"assistant_turn": assistant_turn}
 
@@ -87,10 +100,34 @@ def _persist_node(repository: StateRepository):
     return run
 
 
+def _drift_node(
+    drift_detector: DriftDetector,
+    branch_manager: BranchManager,
+):
+    def run(state: SessionGraphState) -> dict[str, DriftAssessment | ProjectState]:
+        assessment = drift_detector.assess(state.project_state, state.user_message)
+        if assessment.status is DriftStatus.DRIFTED:
+            project_state = branch_manager.preserve_tangent(state.project_state, assessment)
+        elif state.frame_analysis is not None:
+            project_state = apply_frame_analysis(state.project_state, state.frame_analysis)
+        else:
+            project_state = state.project_state.model_copy(deep=True)
+        return {
+            "drift_assessment": assessment,
+            "project_state": project_state,
+        }
+
+    return run
+
+
 def choose_mode(
     project_state: ProjectState,
     frame_analysis: FrameAnalysis | None = None,
+    drift_assessment: DriftAssessment | None = None,
 ) -> ThinkingMode:
+    if drift_assessment and drift_assessment.status is DriftStatus.DRIFTED:
+        return ThinkingMode.CHALLENGE
+
     north_star = project_state.north_star
     missing_core_frame = any(
         not field.strip()

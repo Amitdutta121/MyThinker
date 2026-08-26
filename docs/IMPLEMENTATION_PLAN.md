@@ -92,6 +92,13 @@ Acceptance criteria:
   park-the-idea actions.
 - Tangents become branches or parked ideas instead of disappearing.
 
+Suggested slice order:
+
+- M2a: deterministic drift heuristics plus tangent preservation into branches or
+  parked ideas
+- M2b: model fallback when heuristics are inconclusive plus explicit
+  user-directed branch switching
+
 Suggested subagent split:
 
 - Subagent A: deterministic drift heuristics

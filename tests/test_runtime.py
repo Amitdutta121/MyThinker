@@ -7,6 +7,7 @@ from mythinking.config import Settings
 from mythinking.runtime import ThinkingRuntime, create_runtime
 from mythinking.state import (
     AssistantTurn,
+    DriftAssessment,
     FrameAnalysis,
     NorthStarUpdate,
     ProjectState,
@@ -26,13 +27,16 @@ class SequenceFrameAnalyst:
 
 class RecordingSupervisor:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, ThinkingMode, str, FrameAnalysis | None]] = []
+        self.calls: list[
+            tuple[str, ThinkingMode, str, FrameAnalysis | None, DriftAssessment | None]
+        ] = []
 
     def respond(
         self,
         project_state: ProjectState,
         user_message: str,
         frame_analysis: FrameAnalysis | None = None,
+        drift_assessment: DriftAssessment | None = None,
     ) -> AssistantTurn:
         self.calls.append(
             (
@@ -40,6 +44,7 @@ class RecordingSupervisor:
                 project_state.current_mode,
                 user_message,
                 frame_analysis,
+                drift_assessment,
             )
         )
         question = frame_analysis.recommended_question if frame_analysis else ""
@@ -99,6 +104,7 @@ def test_run_turn_capture_flow_persists_new_project(tmp_path: Path) -> None:
     assert saved.north_star.problem_statement == "Notes are scattered"
     assert frame_analyst.calls == [(turn.project_id, "Help me structure this product idea")]
     assert supervisor.calls[0][1] is ThinkingMode.CAPTURE
+    assert supervisor.calls[0][4] is not None
 
 
 def test_run_turn_resumes_existing_project_and_persists_clarify_updates(
@@ -145,6 +151,83 @@ def test_run_turn_resumes_existing_project_and_persists_clarify_updates(
         ThinkingMode.CAPTURE,
         ThinkingMode.CLARIFY,
     ]
+
+
+def test_run_turn_preserves_tangent_branch_and_sets_challenge_mode(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+            FrameAnalysis(),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+    )
+    seed_turn = runtime.run_turn(
+        "I need a better way to keep product idea notes focused for solo founders."
+    )
+
+    drift_turn = runtime.run_turn(
+        "Tell me everything about vector databases.",
+        project_id=seed_turn.project_id,
+    )
+    saved = runtime.get_project_state(seed_turn.project_id)
+
+    assert drift_turn.mode is ThinkingMode.CHALLENGE
+    assert saved is not None
+    assert saved.current_mode is ThinkingMode.CHALLENGE
+    assert len(saved.branches) == 1
+    assert saved.branches[0].summary == "Tell me everything about vector databases"
+
+
+def test_run_turn_does_not_persist_tangent_frame_updates_into_core_state(tmp_path: Path) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+            FrameAnalysis(
+                north_star=NorthStarUpdate(current_hypothesis="Use vector databases for retrieval"),
+                open_questions_to_add=["Which vector database should I use?"],
+                recommended_question="Which vector database should I use?",
+            ),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+    )
+    seed_turn = runtime.run_turn(
+        "I need a better way to keep product idea notes focused for solo founders."
+    )
+
+    runtime.run_turn(
+        "Tell me everything about vector databases.",
+        project_id=seed_turn.project_id,
+    )
+    saved = runtime.get_project_state(seed_turn.project_id)
+
+    assert saved is not None
+    assert saved.current_mode is ThinkingMode.CHALLENGE
+    assert saved.north_star.current_hypothesis == ""
+    assert saved.open_questions == []
+    assert len(saved.branches) == 1
+    assert saved.branches[0].summary == "Tell me everything about vector databases"
 
 
 def test_get_project_state_returns_none_for_unknown_project(tmp_path: Path) -> None:

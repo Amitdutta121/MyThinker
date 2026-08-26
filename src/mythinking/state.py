@@ -45,6 +45,25 @@ class AssumptionStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class DriftStatus(StrEnum):
+    ON_TRACK = "on_track"
+    INSUFFICIENT_CONTEXT = "insufficient_context"
+    DRIFTED = "drifted"
+
+
+class TangentDisposition(StrEnum):
+    NONE = "none"
+    BRANCH = "branch"
+    PARKED = "parked"
+
+
+class DriftSignal(StrEnum):
+    MISSING_ANCHOR = "missing_anchor"
+    LOW_ANCHOR_OVERLAP = "low_anchor_overlap"
+    EXPLICIT_TANGENT = "explicit_tangent"
+    PARKING_LANGUAGE = "parking_language"
+
+
 class NorthStar(BaseModel):
     """The compact goal representation kept visible throughout a project."""
 
@@ -138,6 +157,17 @@ class FrameAnalysis(BaseModel):
     recommended_question: str = ""
 
 
+class DriftAssessment(BaseModel):
+    """Deterministic drift classification for the current turn."""
+
+    status: DriftStatus = DriftStatus.ON_TRACK
+    disposition: TangentDisposition = TangentDisposition.NONE
+    reason: str = ""
+    tangent_summary: str = ""
+    branch_name: str = ""
+    signals: list[DriftSignal] = Field(default_factory=list)
+
+
 class AssistantTurn(BaseModel):
     """Structured assistant response returned by the runtime."""
 
@@ -185,4 +215,5 @@ class SessionGraphState(BaseModel):
     project_state: ProjectState
     user_message: str = Field(min_length=1)
     frame_analysis: FrameAnalysis | None = None
+    drift_assessment: DriftAssessment | None = None
     assistant_turn: AssistantTurn | None = None

@@ -4,9 +4,10 @@ MyThinking is a personal, stateful AI thinking partner. The application will use
 one user-facing supervisor with bounded specialist agents for framing, exploring,
 researching, and synthesizing ideas.
 
-This repository now contains the verified M1 core loop foundation: OpenRouter
-model configuration, typed project and graph state, SQLite persistence,
-versioned prompt specifications, a runnable LangGraph supervisor loop, and
+This repository now contains the verified M1 core loop foundation plus the
+first M2a drift-control slice: OpenRouter model configuration, typed project
+and graph state, SQLite persistence, versioned prompt specifications, a
+runnable LangGraph supervisor loop with deterministic tangent preservation, and
 offline tests. It intentionally does not make an API request during setup or
 testing.
 
@@ -107,9 +108,15 @@ The current CLI runs the first M1 workflow:
 capture -> frame -> choose_mode -> respond -> persist
 ```
 
-This slice includes only the supervisor and Frame Analyst. Drift detection,
-research, exploration, synthesis, voice, and the Streamlit interface still
-belong to later milestones.
+The current verified runtime flow is:
+
+```text
+capture -> frame -> detect_drift -> choose_mode -> respond -> persist
+```
+
+The current slice includes the supervisor, Frame Analyst, and deterministic
+drift preservation. Model-backed drift fallback, research, exploration,
+synthesis, voice, and the Streamlit interface still belong to later milestones.
 
 ## Codex session rule
 
