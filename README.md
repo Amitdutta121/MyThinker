@@ -58,6 +58,19 @@ uv run mythinking list
 uv run mythinking show <existing-project-id>
 ```
 
+Run the HTTP API (a thin, non-streaming adapter over the same runtime):
+
+```powershell
+uv run mythinking serve
+```
+
+```text
+GET  /health                 liveness check
+POST /turns                  {"message": "...", "project_id": "..."} -> AssistantTurn
+GET  /projects?limit=20      recent project summaries, newest first
+GET  /projects/{project_id}  full ProjectState
+```
+
 The default model is OpenRouter's `~openai/gpt-latest` alias. Set
 `OPENROUTER_MODEL` to any supported `provider/model` slug when you want a fixed
 model. Model availability, capabilities, and pricing should be checked in the
@@ -92,8 +105,9 @@ src/mythinking/
   graph.py        Runnable LangGraph workflow
   runtime.py      Turn orchestration and persistence
   summary.py      Deterministic, offline session summary rendering
+  api.py          HTTP API over the runtime (M7a: non-streaming)
   agents/         Supervisor and specialist agents
-  cli.py          Local setup, smoke, chat, list, and show commands
+  cli.py          Local setup, smoke, chat, list, show, and serve commands
 prompts/           Research-linked prompt specifications
 evals/             Offline behavioral evaluation cases
 tests/             Deterministic unit tests
@@ -119,8 +133,9 @@ capture -> frame -> detect_drift -> choose_mode -> respond -> persist
 ```
 
 The current slice includes the supervisor, Frame Analyst, and deterministic
-drift preservation. Model-backed drift fallback, research, exploration,
-synthesis, voice, and the Streamlit interface still belong to later milestones.
+drift preservation. The `mythinking serve` HTTP API (M7a) is now available as a
+non-streaming adapter over the same runtime; streaming (M7b) and the immersive
+React/Next.js frontend (M7c) are still later slices of M7.
 
 ## Codex session rule
 

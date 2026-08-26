@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,53 @@ def test_build_parser_rejects_project_id_and_last_together() -> None:
 
     with pytest.raises(SystemExit):
         parser.parse_args(["chat", "x", "--project-id", "p1", "--last"])
+
+
+def test_build_parser_parses_serve_command_with_defaults() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["serve"])
+
+    assert args.command == "serve"
+    assert args.host == "127.0.0.1"
+    assert args.port == 8000
+
+
+def test_build_parser_parses_serve_command_with_overrides() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["serve", "--host", "0.0.0.0", "--port", "9001"])
+
+    assert args.host == "0.0.0.0"
+    assert args.port == 9001
+
+
+def test_run_serve_delegates_to_uvicorn(monkeypatch) -> None:
+    calls: list[tuple[str, str, int]] = []
+
+    class FakeUvicorn:
+        @staticmethod
+        def run(app: str, host: str, port: int) -> None:
+            calls.append((app, host, port))
+
+    monkeypatch.setitem(sys.modules, "uvicorn", FakeUvicorn)
+
+    exit_code = cli.run_serve(host="0.0.0.0", port=9001)
+
+    assert exit_code == 0
+    assert calls == [("mythinking.api:app", "0.0.0.0", 9001)]
+
+
+def test_main_routes_serve_command_to_run_serve(monkeypatch) -> None:
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        cli, "run_serve", lambda host="127.0.0.1", port=8000: calls.append((host, port)) or 0
+    )
+
+    exit_code = cli.main(["serve", "--port", "9001"])
+
+    assert exit_code == 0
+    assert calls == [("127.0.0.1", 9001)]
 
 
 def test_build_parser_parses_list_and_show_commands() -> None:

@@ -34,6 +34,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Project id to show; defaults to the most recently updated project",
     )
 
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run the HTTP API",
+    )
+    serve_parser.add_argument(
+        "--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)"
+    )
+    serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind (default: 8000)")
+
     chat_parser = subparsers.add_parser(
         "chat",
         help="Run one persisted thinking turn",
@@ -76,6 +85,13 @@ def run_smoke_model() -> int:
         "Reply with exactly: OPENROUTER_OK"
     )
     print(response.text)
+    return 0
+
+
+def run_serve(host: str = "127.0.0.1", port: int = 8000) -> int:
+    import uvicorn
+
+    uvicorn.run("mythinking.api:app", host=host, port=port)
     return 0
 
 
@@ -130,6 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "init": run_init,
         "status": run_status,
         "smoke-model": run_smoke_model,
+        "serve": lambda: run_serve(args.host, args.port),
         "list": lambda: run_list(args.limit),
         "show": lambda: run_show(args.project_id),
         "chat": lambda: run_chat(args.message, project_id=args.project_id, resume_last=args.last),
