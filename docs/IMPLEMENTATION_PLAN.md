@@ -197,21 +197,57 @@ Suggested slice order:
   `NextAction` entries)
 - M6c: optional user profile extraction, off by default
 
-### M7: UI layer
+### M7: Immersive UI layer
 
-Goal: add a minimal interface after the core workflow is stable.
+Goal: replace the thin, form-style interface originally planned here with a rich
+web frontend that makes the thinking state (north star, branches, evidence,
+decisions, next actions) feel alive and navigable, not just a list of records.
 
 Deliverables:
 
-- Streamlit or similar local UI,
-- streaming output,
-- branch and evidence panels,
-- session selector.
+- an HTTP/WebSocket API layer (FastAPI or similar) over `ThinkingRuntime` that
+  exposes turn submission, streaming assistant output, and full `ProjectState`
+  reads,
+- streaming support in the runtime/graph (e.g. `graph.stream`) so the API can
+  push incremental output instead of only a completed `AssistantTurn`,
+- a React/Next.js frontend with:
+  - a streaming chat surface for the active turn,
+  - a visual workspace panel that renders branches, evidence, decisions, and
+    next-actions as navigable elements (e.g. a branch graph, an evidence
+    timeline, a decision history) rather than static lists,
+  - animated transitions when `current_mode` changes (capture/drift/explore/
+    converge/research/plan) so the UI reflects what the supervisor is doing,
+  - a session selector built on M6a's list/show data,
+- API contract tests (e.g. FastAPI `TestClient`) and offline frontend fixtures
+  so CI never depends on a live LLM call.
+
+Scope:
+
+- core runtime/graph/state logic stays UI-agnostic; the API layer only adapts
+  `ThinkingRuntime` and holds no business logic of its own,
+- the frontend talks to the API over HTTP/WebSocket only; it never imports
+  Python or duplicates supervisor/specialist logic,
+- visual richness (animation, spatial layout) is additive polish and must
+  degrade to functional plain views without breaking data flow.
 
 Acceptance criteria:
 
-- The UI is thin over the existing runtime.
-- Core logic remains testable without the UI.
+- The frontend is thin over the API, and the API is thin over
+  `ThinkingRuntime` — no duplicated business logic in either layer.
+- Assistant responses stream to the browser instead of waiting for the full
+  turn to complete.
+- Branches, evidence, decisions, and next-actions are visually explorable
+  rather than printed as raw lists or JSON.
+- Core logic remains testable without the API or the frontend running.
+
+Suggested slice order:
+
+- M7a: FastAPI backend exposing `run_turn` (non-streaming first) and project
+  state reads, with contract tests
+- M7b: end-to-end streaming (graph streaming through to a WebSocket/SSE feed
+  in the browser)
+- M7c: the Next.js immersive workspace (branch/evidence/decision panels,
+  animated mode transitions, session selector)
 
 ## Rules for milestone execution
 
