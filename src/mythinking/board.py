@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from mythinking.state import (
     Assumption,
     BranchStatus,
+    Decision,
     FrameAnalysis,
     ProjectState,
     ThinkingMode,
@@ -69,14 +70,53 @@ def derive_mode(state: ProjectState) -> ThinkingMode:
 
 
 def mark_plan_stale(state: ProjectState) -> None:
-    """Flag every not-yet-done next action as stale (in place).
+    """Flag every not-yet-done, agent-authored next action as stale (in place).
 
     Called when the committed direction changes or a decision lands, so an
-    existing plan is visibly invalidated without being deleted.
+    existing plan is visibly invalidated without being deleted. Steps the user
+    added by hand (`origin == "user"`) are left alone -- a direction change
+    doesn't invalidate a commitment the user made themselves.
     """
     for step in state.next_actions:
-        if not step.completed:
+        if not step.completed and step.origin != "user":
             step.stale = True
+
+
+def commit_proposal(state: ProjectState) -> ProjectState:
+    """Commit `state.proposal` verbatim as the project's direction (deterministic).
+
+    Returns a fresh deep copy: sets `north_star.current_hypothesis` to the
+    proposal statement, logs a "Committed project direction" decision, clears the
+    proposal, marks any agent-authored plan stale if the direction actually
+    changed, and merges active branches whose name/summary the new direction
+    subsumes. The caller is responsible for checking `state.proposal is not None`
+    and for any authorization gate.
+    """
+    new_state = state.model_copy(deep=True)
+    proposal = new_state.proposal
+    assert proposal is not None  # caller-guaranteed
+    old_direction = new_state.north_star.current_hypothesis
+    new_state.north_star.current_hypothesis = proposal.statement
+    new_state.decisions.append(
+        Decision(
+            question="Committed project direction",
+            choice=proposal.statement,
+            rationale=proposal.rationale,
+            alternatives=proposal.alternatives_considered,
+        )
+    )
+    new_state.proposal = None
+    if old_direction != new_state.north_star.current_hypothesis:
+        mark_plan_stale(new_state)
+    lowered = new_state.north_star.current_hypothesis.lower()
+    for branch in new_state.branches:
+        if branch.status != BranchStatus.ACTIVE:
+            continue
+        summary = branch.summary.lower()
+        if branch.name.lower() in lowered or (summary and summary in lowered):
+            branch.status = BranchStatus.MERGED
+    new_state.mark_updated()
+    return new_state
 
 
 def apply_frame_analysis(

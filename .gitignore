@@ -13,13 +13,24 @@ data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 
+# MLflow tracing store + artifacts
+mlflow.db
+mlruns/
+mlartifacts/
+
+node_modules/
 frontend/node_modules/
 frontend/.next/
 frontend/out/
 frontend/.env.local
+frontend/.env.local.bak
 frontend/next-env.d.ts
 frontend/*.tsbuildinfo
 
 # local dev logs
 .backend_log.txt
 .frontend_log.txt
+.mlflow_ui_log.txt
+
+# editor / IDE
+.idea/

@@ -84,9 +84,17 @@ class Settings(BaseSettings):
         ge=1,
         validation_alias="MYTHINKING_CONTEXT_RETRIEVAL_TOP_K",
     )
-    enable_deep_research: bool = Field(
+    mlflow_tracing: bool = Field(
         default=False,
-        validation_alias="MYTHINKING_ENABLE_DEEP_RESEARCH",
+        validation_alias="MYTHINKING_MLFLOW_TRACING",
+    )
+    mlflow_tracking_uri: str = Field(
+        default="sqlite:///mlflow.db",
+        validation_alias="MLFLOW_TRACKING_URI",
+    )
+    mlflow_experiment: str = Field(
+        default="mythinking",
+        validation_alias="MYTHINKING_MLFLOW_EXPERIMENT",
     )
     research_retriever: Literal["duckduckgo", "tavily"] = Field(
         default="duckduckgo",

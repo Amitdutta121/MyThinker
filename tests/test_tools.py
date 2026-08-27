@@ -9,7 +9,6 @@ from pydantic import SecretStr
 import mythinking.tools as tools_module
 from mythinking.config import Settings
 from mythinking.context import ContextRetriever
-from mythinking.deep_research import ResearchSource
 from mythinking.retrieval import list_documents, open_document_store
 from mythinking.state import (
     BranchStatus,
@@ -20,7 +19,7 @@ from mythinking.state import (
     ProjectState,
     ResearchTask,
 )
-from mythinking.tools import build_context_tools, build_research_tools
+from mythinking.tools import ResearchSource, build_context_tools, build_research_tools
 
 
 class FakeEmbeddings(Embeddings):
@@ -29,16 +28,6 @@ class FakeEmbeddings(Embeddings):
 
     def embed_query(self, text: str) -> list[float]:
         return [1.0]
-
-
-class FakeDeepResearchRunner:
-    def __init__(self, sources: list[ResearchSource]) -> None:
-        self.sources = sources
-        self.questions_asked: list[str] = []
-
-    def run(self, question: str) -> list[ResearchSource]:
-        self.questions_asked.append(question)
-        return self.sources
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -51,34 +40,10 @@ def store(tmp_path: Path):
         yield opened
 
 
-def test_build_research_tools_excludes_run_deep_research_when_disabled(store: Any) -> None:
-    tools = build_research_tools("proj1", store, _settings(enable_deep_research=False))
+def test_build_research_tools_exposes_only_web_search_and_fetch_url(store: Any) -> None:
+    tools = build_research_tools("proj1", store, _settings())
 
     assert [t.name for t in tools] == ["web_search", "fetch_url"]
-
-
-def test_build_research_tools_includes_run_deep_research_when_enabled(store: Any) -> None:
-    tools = build_research_tools("proj1", store, _settings(enable_deep_research=True))
-
-    assert "run_deep_research" in [t.name for t in tools]
-
-
-def test_run_deep_research_tool_calls_runner_and_indexes_results(store: Any) -> None:
-    runner = FakeDeepResearchRunner(
-        [ResearchSource(title="A study", content="Pricing converts at 2%.", url="https://x")]
-    )
-    tools = build_research_tools(
-        "proj1", store, _settings(enable_deep_research=True), deep_research_runner=runner
-    )
-    run_deep_research = next(t for t in tools if t.name == "run_deep_research")
-
-    result = run_deep_research.invoke({"query": "pricing conversion"})
-
-    assert runner.questions_asked == ["pricing conversion"]
-    assert "Pricing converts at 2%" in result
-    documents = list_documents(store, "proj1")
-    assert len(documents) == 1
-    assert documents[0].title == "A study"
 
 
 def test_web_search_tool_dispatches_to_duckduckgo_by_default(

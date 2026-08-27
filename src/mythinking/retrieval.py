@@ -7,7 +7,7 @@ vector search. This module is a thin, typed wrapper around it, not a new
 storage engine: no custom schema or SQL is introduced here.
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -99,3 +99,29 @@ def list_chunks(
         limit=limit,
     )
     return [DocumentChunk.model_validate(item.value) for item in items]
+
+
+def delete_document(store: SqliteStore, project_id: str, document_id: str) -> None:
+    """Remove a document and all its indexed chunks. Raises KeyError if unknown."""
+
+    if store.get((project_id, "document"), document_id) is None:
+        raise KeyError(f"Unknown document_id: {document_id}")
+    # `list_chunks` returns a single capped page; loop so a large document (a PDF
+    # that produced more than `limit` chunks) is cleared completely rather than
+    # leaving orphan chunks that still answer `search_documents`.
+    while chunks := list_chunks(store, project_id, document_id):
+        for chunk in chunks:
+            store.delete((project_id, "document_chunk"), chunk.id)
+    store.delete((project_id, "document"), document_id)
+
+
+def delete_documents(
+    store: SqliteStore, project_id: str, document_ids: Iterable[str]
+) -> None:
+    """Remove several documents and their chunks. Unknown ids are skipped."""
+
+    for document_id in document_ids:
+        try:
+            delete_document(store, project_id, document_id)
+        except KeyError:
+            continue

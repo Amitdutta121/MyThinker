@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -121,6 +122,10 @@ class NextAction(BaseModel):
     implementation_intention: str = ""
     completed: bool = False
     stale: bool = False
+    # "agent" for steps the Planner wrote, "user" for steps added by hand in the
+    # UI. User steps survive re-planning and are not marked stale by a direction
+    # change -- see board.mark_plan_stale and tools.create_or_revise_plan.
+    origin: Literal["agent", "user"] = "agent"
 
 
 class DirectionProposal(BaseModel):
@@ -289,8 +294,27 @@ class AssistantTurn(BaseModel):
     question: str = ""
 
 
+class ChatRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class ChatMessage(BaseModel):
+    """One replayable transcript entry, reconstructed from the checkpointer.
+
+    The runtime persists LangGraph messages (which also include tool calls and
+    tool results) in the checkpoint database keyed by `project_id`. This is the
+    trimmed, display-only projection the API hands the frontend so a reopened
+    session shows its conversation, not just its board.
+    """
+
+    role: ChatRole
+    content: str
+
+
 class TurnStreamEventType(StrEnum):
     NODE = "node"
+    TOKEN = "token"
     TURN = "turn"
     ERROR = "error"
 
@@ -300,9 +324,11 @@ class TurnStreamEvent(BaseModel):
 
     `node`/`mode` are populated for `NODE` events (the graph node that just
     ran, and the project's current mode if that node touched `project_state`).
-    `turn` is populated for the terminal `TURN` event. `detail` is populated
-    for `ERROR` events raised mid-stream, after the HTTP response has already
-    started, so it is delivered as data instead of an HTTP status.
+    `detail` carries the incremental text chunk for `TOKEN` events (the final
+    assistant answer as it is generated) and the message for `ERROR` events
+    raised mid-stream, after the HTTP response has already started, so it is
+    delivered as data instead of an HTTP status. `turn` is populated for the
+    terminal `TURN` event.
     """
 
     type: TurnStreamEventType

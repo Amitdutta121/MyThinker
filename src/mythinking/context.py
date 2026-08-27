@@ -15,6 +15,17 @@ from mythinking.retrieval import search_content
 from mythinking.state import ProjectState
 
 
+def _citation_tag(chunk_value: dict) -> str:
+    """Build the copy-into-the-answer citation tag for one retrieved document chunk.
+
+    ``[[file.pdf p.3]]`` for a page-tracked PDF chunk, ``[[Title]]`` for a web
+    source with no pagination.
+    """
+    label = chunk_value.get("document_title") or "source"
+    page = chunk_value.get("page")
+    return f"[[{label} p.{page}]]" if page else f"[[{label}]]"
+
+
 def format_north_star_brief(project_state: ProjectState) -> str:
     north_star = project_state.north_star
     lines = [f"Title: {north_star.title}"]
@@ -104,7 +115,7 @@ def build_compact_agent_context(project_state: ProjectState) -> str:
         [
             "CURRENT AUTHORITATIVE PROJECT STATUS",
             "",
-            f"North Star: {ns.problem_statement or ns.title or '(not established)'}",
+            f"North Star: {ns.problem_statement or '(not established)'}",
             f"Committed direction: {committed}",
             f"Current AI proposal: {proposal}",
             f"Active branches: {active or '(none)'}",
@@ -185,11 +196,9 @@ class ContextRetriever:
         )
         if not results:
             return "No research sources retrieved yet."
-        lines = []
-        for index, result in enumerate(results, start=1):
-            value = result.value
-            lines.append(f"{index}. {value.get('text', '')}")
-        return "\n\n".join(lines)
+        return "\n\n".join(
+            f"{_citation_tag(result.value)}\n{result.value.get('text', '')}" for result in results
+        )
 
 
 __all__ = [

@@ -1,14 +1,58 @@
 @import "tailwindcss";
 
+/*
+ * `--mode-accent` / `--mode-accent-soft` are re-set per turn by `Workspace`
+ * from the active thinking mode. Registering them as typed custom properties
+ * lets the value animate instead of snapping, so the whole surface (composer
+ * ring, links, user bubble, Send button, focus outline) ripples to the new
+ * mode colour when `current_mode` changes.
+ */
+@property --mode-accent {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #8ba3cf;
+}
+@property --mode-accent-soft {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: rgba(139, 163, 207, 0.16);
+}
+
 :root {
-  --bg: #0b0d14;
-  --surface: #12151f;
-  --surface-raised: #181c29;
-  --border: #262b3a;
-  --text: #e7e9f2;
-  --text-muted: #8b90a3;
-  --mode-accent: #7c9cff;
-  --mode-accent-soft: rgba(124, 156, 255, 0.16);
+  /* A warm near-neutral ink scale, not the stock blue-black. The steps between
+   * surface levels are deliberately uneven (bg → surface → raised → border) so
+   * a card reads against its panel without a heavy shadow. */
+  --bg: #100f0e;
+  --surface: #1a1917;
+  --surface-raised: #232120;
+  --border: #34312e;
+  --text: #ecebe8;
+  /* Kept above the AA floor: the rail leans on this colour for a lot of real
+   * content at 12-13px. */
+  --text-muted: #b0aca4;
+  --mode-accent: #8ba3cf;
+  --mode-accent-soft: rgba(139, 163, 207, 0.16);
+}
+
+/* The scope that carries the live mode accent (see Workspace). */
+.mode-tint {
+  transition:
+    --mode-accent 0.45s ease,
+    --mode-accent-soft 0.45s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mode-tint {
+    transition: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 body {
@@ -24,4 +68,128 @@ body {
 
 ::selection {
   background: var(--mode-accent-soft);
+}
+
+/* Visible keyboard focus for anything that doesn't set its own. */
+:focus-visible {
+  outline: 2px solid var(--mode-accent);
+  outline-offset: 2px;
+}
+
+/*
+ * Markdown rendering for assistant messages (see components/Markdown.tsx).
+ * Scoped, compact prose — tuned for chat bubbles, not article bodies.
+ */
+.md-prose {
+  font-size: 0.875rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.md-prose > :first-child {
+  margin-top: 0;
+}
+.md-prose > :last-child {
+  margin-bottom: 0;
+}
+.md-prose p,
+.md-prose ul,
+.md-prose ol,
+.md-prose blockquote,
+.md-prose pre,
+.md-prose table {
+  margin: 0.5rem 0;
+}
+.md-prose h1,
+.md-prose h2,
+.md-prose h3,
+.md-prose h4 {
+  margin: 0.9rem 0 0.4rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.md-prose h1 {
+  font-size: 1.15rem;
+}
+.md-prose h2 {
+  font-size: 1.05rem;
+}
+.md-prose h3 {
+  font-size: 0.95rem;
+}
+.md-prose h4 {
+  font-size: 0.875rem;
+}
+.md-prose ul,
+.md-prose ol {
+  padding-left: 1.25rem;
+}
+.md-prose ul {
+  list-style: disc;
+}
+.md-prose ol {
+  list-style: decimal;
+}
+.md-prose li {
+  margin: 0.2rem 0;
+}
+.md-prose li > ul,
+.md-prose li > ol {
+  margin: 0.2rem 0;
+}
+.md-prose a {
+  color: var(--mode-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md-prose code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.md-prose pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+.md-prose pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 0.8rem;
+}
+.md-prose blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 0.75rem;
+  color: var(--text-muted);
+}
+.md-prose hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1rem 0;
+}
+.md-prose table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.md-prose th,
+.md-prose td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+}
+.md-prose th {
+  background: var(--surface-raised);
+  font-weight: 600;
+}
+.md-prose img {
+  max-width: 100%;
+  height: auto;
 }

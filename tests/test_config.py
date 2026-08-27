@@ -15,7 +15,6 @@ def test_settings_defaults_do_not_require_a_key() -> None:
     assert settings.store_database_path == Path("data/store.sqlite")
     assert not settings.has_api_key
     assert settings.enable_profile_extraction is False
-    assert settings.enable_deep_research is False
     assert settings.research_retriever == "duckduckgo"
     assert settings.embedding_model == "openai/text-embedding-3-small"
     assert settings.embedding_dimensions == 1536
@@ -46,12 +45,6 @@ def test_require_api_key_has_actionable_error() -> None:
 def test_invalid_data_collection_policy_is_rejected() -> None:
     with pytest.raises(ValidationError):
         Settings(openrouter_data_collection="sometimes", _env_file=None)
-
-
-def test_deep_research_can_be_enabled_via_env_alias() -> None:
-    settings = Settings(_env_file=None, enable_deep_research=True)
-
-    assert settings.enable_deep_research is True
 
 
 def test_invalid_research_retriever_is_rejected() -> None:

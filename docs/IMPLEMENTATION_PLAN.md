@@ -410,6 +410,49 @@ the exact proposal is committed only on explicit authorization; planning cannot
 precede commitment; committing invalidates the old plan; source material is not
 auto-promoted to evidence; a blocked operation is never reported as success.
 
+## Milestone 11: remove deep research
+
+The validation notebook's research surface is exactly two tools -- `web_search`
+and `fetch_url`. This milestone brings the repo in line: the `gpt-researcher`
+deep-research pass added in `M9` is removed entirely.
+
+Removed:
+
+- `deep_research.py` (`DeepResearchRunner`, the `gpt-researcher` env wiring),
+- `agents/researcher.py` (the pre-M10 `Researcher` specialist -- already dead
+  after the M10 pivot; nothing in the single-agent runtime called it),
+- `prompts/researcher.v1..v4.yaml`,
+- `Settings.enable_deep_research` / `MYTHINKING_ENABLE_DEEP_RESEARCH`,
+- the `gpt-researcher` dependency (and ~130 transitive packages),
+- `tests/test_deep_research.py`, `tests/test_researcher_agent.py`, and the
+  deep-research assertions in `test_tools.py` / `test_config.py` / `test_prompts.py`.
+
+Changed:
+
+- `tools.py`: `build_research_tools` returns `[web_search, fetch_url]`
+  unconditionally; `ResearchSource` (the fetched-source shape) now lives here.
+
+Unchanged: `research.py` (`ResearchImporter`, `format_open_research_tasks`) and
+`state.ResearcherAnalysis` stay -- they back the project research-task ledger,
+not the removed live deep-research pass. The Tavily option for `web_search`
+(`MYTHINKING_RESEARCH_RETRIEVER=tavily`) is unaffected.
+
+## Milestone 12: prompt parity + page-tracked document citations
+
+Bring the two remaining repo/notebook gaps into line with
+`notebooks/thinker_final_architecture_validation (1).ipynb`.
+
+- `prompts/lead_partner.v10.yaml`: the `template` now renders byte-identical to
+  the notebook's `SYSTEM_PROMPT` (restores the `PROJECT CONTEXT` +
+  `AUTHORITATIVE PROJECT STATUS BEHAVIOR` sections and the original wording).
+- `documents.py`: `DocumentChunk` gains `page` and `document_title`; new
+  `chunk_pages()` chunks a PDF page by page.
+- `tools.py`: `ingest_pdf` indexes per-page chunks with their 1-based page
+  number; web chunks carry `document_title` but no page.
+- `context.py`: `select_document_chunks` prefixes every passage with a
+  `_citation_tag` -- `[[file.pdf p.3]]` for PDFs, `[[Title]]` for web sources --
+  so the model can copy provenance verbatim, as the prompt now demands.
+
 ## Rules for milestone execution
 
 - Only one milestone should be in active implementation at a time.

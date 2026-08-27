@@ -8,15 +8,19 @@ display-mode derivation, streaming shape, eager validation, and profile wiring.
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import SecretStr
 
 from mythinking.agents.profile_extractor import ProfileExtractor
 from mythinking.config import Settings
-from mythinking.runtime import ThinkingRuntime, create_runtime
+from mythinking.runtime import ThinkingRuntime, _history_from_messages, create_runtime
 from mythinking.state import (
+    DirectionProposal,
     FrameAnalysis,
+    NextAction,
+    NorthStar,
     ProfileAnalysis,
+    ProjectState,
     ThinkingMode,
     TurnStreamEventType,
     UserProfile,
@@ -31,11 +35,12 @@ class _FakeAgent:
     the board; `tool_names` are surfaced as ToolMessage names when streaming.
     """
 
-    def __init__(self, holder, *, text: str, mutate=None, tool_names=()) -> None:
+    def __init__(self, holder, *, text: str, mutate=None, tool_names=(), token_chunks=()) -> None:
         self._holder = holder
         self._text = text
         self._mutate = mutate
         self._tool_names = tool_names
+        self._token_chunks = token_chunks
 
     def invoke(self, _payload, config=None):
         if self._mutate:
@@ -43,16 +48,33 @@ class _FakeAgent:
         return {"messages": [AIMessage(content=self._text)]}
 
     def stream(self, _payload, config=None, stream_mode=None):
+        """Mirror LangGraph's multi-mode stream: yields ``(mode, chunk)`` pairs
+        when ``stream_mode`` is a list (as the runtime now asks)."""
         if self._mutate:
             self._mutate(self._holder)
+        multi = isinstance(stream_mode, (list, tuple))
         for name in self._tool_names:
-            yield {"tools": {"messages": [ToolMessage(content="ok", name=name, tool_call_id=name)]}}
-        yield {"model": {"messages": [AIMessage(content=self._text)]}}
+            update = {
+                "tools": {"messages": [ToolMessage(content="ok", name=name, tool_call_id=name)]}
+            }
+            yield ("updates", update) if multi else update
+        if multi:
+            for chunk in self._token_chunks:
+                yield ("messages", (AIMessage(content=chunk), {"langgraph_node": "model"}))
+        yield (
+            ("updates", {"model": {"messages": [AIMessage(content=self._text)]}})
+            if multi
+            else {"model": {"messages": [AIMessage(content=self._text)]}}
+        )
 
 
-def _install_fake_agent(monkeypatch, *, text="Here's my take.", mutate=None, tool_names=()):
+def _install_fake_agent(
+    monkeypatch, *, text="Here's my take.", mutate=None, tool_names=(), token_chunks=()
+):
     def _factory(model, tools, system_prompt, holder, *, checkpointer=None, **_kw):
-        return _FakeAgent(holder, text=text, mutate=mutate, tool_names=tool_names)
+        return _FakeAgent(
+            holder, text=text, mutate=mutate, tool_names=tool_names, token_chunks=token_chunks
+        )
 
     monkeypatch.setattr("mythinking.runtime.build_thinker", _factory)
 
@@ -151,19 +173,58 @@ def test_get_project_state_returns_none_for_unknown_project(tmp_path: Path, monk
     assert runtime.get_project_state("nope") is None
 
 
+def test_history_from_messages_keeps_only_user_and_final_assistant_turns() -> None:
+    raw = [
+        SystemMessage(content="you are the thinker"),
+        HumanMessage(content="  help me frame this  "),
+        AIMessage(content="", tool_calls=[{"name": "set_north_star", "args": {}, "id": "t1"}]),
+        ToolMessage(content="ok", name="set_north_star", tool_call_id="t1"),
+        AIMessage(content="Here's the frame."),
+        HumanMessage(content=""),
+    ]
+
+    history = _history_from_messages(raw)
+
+    assert [(m.role.value, m.content) for m in history] == [
+        ("user", "help me frame this"),
+        ("assistant", "Here's the frame."),
+    ]
+
+
+def test_get_history_rejects_unknown_project(tmp_path: Path, monkeypatch) -> None:
+    _install_fake_agent(monkeypatch)
+    runtime = _build_runtime(tmp_path)
+    with pytest.raises(KeyError, match="Unknown project_id"):
+        runtime.get_history("missing")
+
+
+def test_get_history_is_empty_when_no_checkpoint_exists(tmp_path: Path, monkeypatch) -> None:
+    # The fake agent never writes to the checkpointer, so a persisted project
+    # has state but no transcript -- get_history must return [] rather than raise.
+    _install_fake_agent(monkeypatch)
+    runtime = _build_runtime(tmp_path)
+    project_id = runtime.run_turn("seed the board").project_id
+    assert runtime.get_history(project_id) == []
+
+
 def test_stream_turn_emits_tool_node_events_then_one_turn_event(
     tmp_path: Path, monkeypatch
 ) -> None:
     _install_fake_agent(
-        monkeypatch, text="Explored.", tool_names=("set_north_star", "explore_ideas")
+        monkeypatch,
+        text="Explored.",
+        tool_names=("set_north_star", "explore_ideas"),
+        token_chunks=("Explo", "red."),
     )
     runtime = _build_runtime(tmp_path)
 
     events = list(runtime.stream_turn("Explore designs for a thinking workspace"))
 
     node_names = [e.node for e in events if e.type is TurnStreamEventType.NODE]
+    token_text = "".join(e.detail for e in events if e.type is TurnStreamEventType.TOKEN)
     turn_events = [e for e in events if e.type is TurnStreamEventType.TURN]
     assert node_names == ["set_north_star", "explore_ideas"]
+    assert token_text == "Explored."
     assert len(turn_events) == 1
     assert turn_events[0].turn is not None
     assert turn_events[0].turn.message == "Explored."
@@ -256,3 +317,139 @@ def test_create_runtime_honors_explicit_database_paths(
 
 # Frame analyses are exercised through tool tests, not here; kept import-alive.
 _ = FrameAnalysis
+
+
+# --------------------------------------------------------------- direct edits
+
+
+def _seed(runtime: ThinkingRuntime, **fields) -> ProjectState:
+    state = ProjectState(
+        north_star=NorthStar(title="Note app", problem_statement="Notes get lost"),
+        **fields,
+    )
+    runtime.repository.save(state)
+    return state
+
+
+def test_edit_north_star_updates_the_title(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(runtime)
+
+    updated = runtime.edit_north_star(seeded.project_id, title="  Personal KB  ")
+
+    assert updated.north_star.title == "Personal KB"
+    assert runtime.get_project_state(seeded.project_id).north_star.title == "Personal KB"
+
+
+def test_edit_north_star_rejects_blank_title(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(runtime)
+
+    with pytest.raises(ValueError):
+        runtime.edit_north_star(seeded.project_id, title="   ")
+
+
+def test_edit_north_star_unknown_project_raises_keyerror(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+
+    with pytest.raises(KeyError):
+        runtime.edit_north_star("nope", title="x")
+
+
+def test_add_edit_and_delete_decision(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(runtime)
+
+    added = runtime.add_decision(seeded.project_id, question="Sync?", choice="Single-device for v1")
+    assert [d.choice for d in added.decisions] == ["Single-device for v1"]
+    decision_id = added.decisions[0].id
+
+    edited = runtime.edit_decision(
+        seeded.project_id, decision_id, rationale="less complexity", reversible=False
+    )
+    assert edited.decisions[0].rationale == "less complexity"
+    assert edited.decisions[0].reversible is False
+
+    cleared = runtime.delete_decision(seeded.project_id, decision_id)
+    assert cleared.decisions == []
+
+
+def test_edit_decision_unknown_id_raises_keyerror(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(runtime)
+
+    with pytest.raises(KeyError):
+        runtime.edit_decision(seeded.project_id, "missing", choice="x")
+
+
+def test_approve_proposal_commits_and_marks_agent_plan_stale(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(
+        runtime,
+        proposal=DirectionProposal(statement="Ship the app", rationale="fewest unknowns"),
+        next_actions=[
+            NextAction(description="agent step", origin="agent"),
+            NextAction(description="my step", origin="user"),
+        ],
+    )
+
+    committed = runtime.approve_proposal(seeded.project_id)
+
+    assert committed.north_star.current_hypothesis == "Ship the app"
+    assert committed.proposal is None
+    assert committed.decisions[0].question == "Committed project direction"
+    by_desc = {a.description: a for a in committed.next_actions}
+    assert by_desc["agent step"].stale is True
+    assert by_desc["my step"].stale is False
+
+
+def test_approve_proposal_without_a_proposal_raises_valueerror(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(runtime)
+
+    with pytest.raises(ValueError):
+        runtime.approve_proposal(seeded.project_id)
+
+
+def test_dismiss_proposal_clears_it(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(runtime, proposal=DirectionProposal(statement="maybe this"))
+
+    cleared = runtime.dismiss_proposal(seeded.project_id)
+
+    assert cleared.proposal is None
+
+
+def test_add_next_action_is_tagged_user_and_survives_replanning(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(runtime)
+
+    updated = runtime.add_next_action(
+        seeded.project_id, description="Call three note-app users", time_box_minutes=45
+    )
+
+    assert updated.next_actions[0].origin == "user"
+    assert updated.next_actions[0].time_box_minutes == 45
+
+
+def test_add_next_action_rejects_blank_description(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(runtime)
+
+    with pytest.raises(ValueError):
+        runtime.add_next_action(seeded.project_id, description="  ")
+
+
+def test_edit_and_delete_next_action(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    seeded = _seed(runtime, next_actions=[NextAction(description="rough draft")])
+    action_id = seeded.next_actions[0].id
+
+    edited = runtime.edit_next_action(
+        seeded.project_id, action_id, description="Prototype FTS5 search", completed=True
+    )
+    assert edited.next_actions[0].description == "Prototype FTS5 search"
+    assert edited.next_actions[0].completed is True
+
+    cleared = runtime.delete_next_action(seeded.project_id, action_id)
+    assert cleared.next_actions == []

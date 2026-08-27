@@ -25,6 +25,8 @@ class DocumentChunk(BaseModel):
     project_id: str
     chunk_index: int
     text: str
+    page: int | None = None
+    document_title: str = ""
 
 
 def chunk_text(text: str, *, max_chars: int = 1500, overlap: int = 200) -> list[str]:
@@ -62,3 +64,17 @@ def chunk_text(text: str, *, max_chars: int = 1500, overlap: int = 200) -> list[
     if current:
         chunks.append(current)
     return chunks
+
+
+def chunk_pages(
+    pages: list[str], *, max_chars: int = 1500, overlap: int = 200
+) -> list[tuple[int, str]]:
+    """Chunk each page separately, tagging every chunk with its 1-based page number.
+
+    Used for PDFs so a retrieved passage can be cited as ``[[file.pdf p.3]]``.
+    """
+    numbered: list[tuple[int, str]] = []
+    for page_number, page_text in enumerate(pages, start=1):
+        for chunk in chunk_text(page_text, max_chars=max_chars, overlap=overlap):
+            numbered.append((page_number, chunk))
+    return numbered

@@ -7,48 +7,55 @@ export interface ModeStyle {
   accentSoft: string;
 }
 
+/*
+ * A deliberately narrow palette, not a spectrum. The five exploratory modes
+ * share one cool analogous band (blue → indigo → teal, all desaturated) so the
+ * per-turn `--mode-accent` tint shifts without lurching through a rainbow.
+ * Only the two modes that carry a real signal break out: `challenge` warms to
+ * amber (tension), `decide` goes green (commit).
+ */
 export const MODE_STYLES: Record<ThinkingMode, ModeStyle> = {
   capture: {
     label: "Capture",
     description: "Getting the idea down",
-    accent: "#7c9cff",
-    accentSoft: "rgba(124, 156, 255, 0.16)",
+    accent: "#8ba3cf",
+    accentSoft: "rgba(139, 163, 207, 0.16)",
   },
   clarify: {
     label: "Clarify",
     description: "Sharpening the frame",
-    accent: "#63c7ff",
-    accentSoft: "rgba(99, 199, 255, 0.16)",
+    accent: "#6b9dd0",
+    accentSoft: "rgba(107, 157, 208, 0.16)",
   },
   challenge: {
     label: "Challenge",
     description: "Testing assumptions",
-    accent: "#ff8a5c",
-    accentSoft: "rgba(255, 138, 92, 0.16)",
+    accent: "#d9945a",
+    accentSoft: "rgba(217, 148, 90, 0.16)",
   },
   explore: {
     label: "Explore",
     description: "Generating alternatives",
-    accent: "#b98bff",
-    accentSoft: "rgba(185, 139, 255, 0.16)",
+    accent: "#9d94ce",
+    accentSoft: "rgba(157, 148, 206, 0.16)",
   },
   research: {
     label: "Research",
     description: "Gathering evidence",
-    accent: "#3fd0c9",
-    accentSoft: "rgba(63, 208, 201, 0.16)",
+    accent: "#5fa5ad",
+    accentSoft: "rgba(95, 165, 173, 0.16)",
   },
   converge: {
     label: "Converge",
     description: "Weighing tradeoffs",
-    accent: "#f5c453",
-    accentSoft: "rgba(245, 196, 83, 0.16)",
+    accent: "#8499cc",
+    accentSoft: "rgba(132, 153, 204, 0.16)",
   },
   decide: {
     label: "Decide",
     description: "Committing to a path",
-    accent: "#5cd68a",
-    accentSoft: "rgba(92, 214, 138, 0.16)",
+    accent: "#6cc191",
+    accentSoft: "rgba(108, 193, 145, 0.16)",
   },
 };
 

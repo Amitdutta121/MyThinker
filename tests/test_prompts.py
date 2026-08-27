@@ -24,6 +24,7 @@ def test_retired_prompts_are_gone() -> None:
     prompts = PromptRegistry(PROMPT_DIR).load_all()
     assert not any(key.startswith("intent_classifier:") for key in prompts)
     assert not any(key.startswith("drift_judge:") for key in prompts)
+    assert not any(key.startswith("researcher:") for key in prompts)
 
 
 def test_latest_lead_partner_is_the_single_agent_prompt() -> None:
@@ -33,12 +34,6 @@ def test_latest_lead_partner_is_the_single_agent_prompt() -> None:
     # The single-agent system prompt is static; the compact status block is
     # injected by middleware, so it renders with no context variables.
     assert "Thinker" in prompt.render({})
-
-
-def test_latest_researcher_prompt_version_is_selected() -> None:
-    prompt = PromptRegistry(PROMPT_DIR).get("researcher")
-
-    assert prompt.version == 4
 
 
 def test_specialist_prompt_render_still_requires_all_variables() -> None:

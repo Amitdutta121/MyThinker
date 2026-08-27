@@ -1,11 +1,9 @@
-"""Tools for the agentic Researcher and Supervisor.
+"""Tools handed to the single Thinker agent.
 
-No manual gate decides which of these are visible to a model at any given
-moment (besides `enable_deep_research` deciding whether `run_deep_research`
-is even in the list at all -- see its docstring below). Tool *selection*
-within whatever list is handed to `create_agent` is the model's own
-judgment, guided by each tool's description -- the idiomatic LangChain
-pattern, not a hand-coded keyword check.
+No manual gate decides which of these are visible to the model at any given
+moment. Tool *selection* within whatever list is handed to `create_agent` is
+the model's own judgment, guided by each tool's description -- the idiomatic
+LangChain pattern, not a hand-coded keyword check.
 """
 
 import json
@@ -18,7 +16,7 @@ from bs4 import BeautifulSoup
 from ddgs import DDGS
 from langchain_core.tools import BaseTool, tool
 from langgraph.store.sqlite import SqliteStore
-from pypdf import PdfReader
+from pydantic import BaseModel
 from tavily import TavilyClient
 
 from mythinking.agents.evidence_analyst import EvidenceAnalyst
@@ -26,10 +24,14 @@ from mythinking.agents.explorer import Explorer
 from mythinking.agents.frame_analyst import FrameAnalyst
 from mythinking.agents.planner import Planner
 from mythinking.agents.synthesizer import Synthesizer
-from mythinking.board import MutableStateHolder, apply_frame_analysis, mark_plan_stale
+from mythinking.board import (
+    MutableStateHolder,
+    apply_frame_analysis,
+    commit_proposal,
+    mark_plan_stale,
+)
 from mythinking.config import Settings
 from mythinking.context import ContextRetriever
-from mythinking.deep_research import DeepResearchRunner, ResearchSource
 from mythinking.documents import Document, DocumentChunk, chunk_text
 from mythinking.exploration import ExplorationManager, format_branch_alternatives
 from mythinking.gates import (
@@ -38,6 +40,7 @@ from mythinking.gates import (
     check_user_decision,
     user_authorized_commitment,
 )
+from mythinking.ingest import IngestError, ingest_file
 from mythinking.planning import PlanningService, format_next_actions
 from mythinking.research import format_open_research_tasks
 from mythinking.retrieval import index_chunk, index_document, list_documents
@@ -52,6 +55,16 @@ from mythinking.state import (
 
 _FETCH_TIMEOUT_SECONDS = 15.0
 _MAX_RESULT_CHARS = 4000
+
+
+class ResearchSource(BaseModel):
+    """One fetched web source produced by `web_search` / `fetch_url`."""
+
+    title: str = ""
+    content: str = ""
+    url: str = ""
+
+
 _PARK_PHRASES = (
     "park",
     "set aside",
@@ -82,20 +95,15 @@ def build_research_tools(
     store: SqliteStore,
     settings: Settings,
     research_task_id: str = "",
-    *,
-    deep_research_runner: DeepResearchRunner | None = None,
 ) -> list[BaseTool]:
     """Build this turn's research toolset, closing over the current project/store."""
 
-    runner = deep_research_runner or DeepResearchRunner(settings)
-
     @tool
     def web_search(query: str) -> str:
-        """Search the web for one specific, narrower fact or source.
+        """Search the web for one specific fact or source.
 
-        Cheaper and faster than run_deep_research -- use this for a
-        targeted lookup (e.g. one fact, one comparison), not a
-        comprehensive multi-source report.
+        Use this for a targeted lookup (e.g. one fact, one comparison).
+        Answer directly instead when you already have enough information.
         """
         results = _run_web_search(query, settings)
         _store_and_index_sources(project_id, store, research_task_id, results)
@@ -111,23 +119,7 @@ def build_research_tools(
         _store_and_index_sources(project_id, store, research_task_id, [source])
         return source.content[:_MAX_RESULT_CHARS] or "The page returned no readable text."
 
-    @tool
-    def run_deep_research(query: str) -> str:
-        """Run a thorough, multi-source live web-research pass.
-
-        Expensive and slow. Only call this when the user has explicitly and
-        unambiguously asked for deep, thorough, or extensive research (e.g.
-        "do a deep research on this", "search the web thoroughly for X").
-        For a narrower question, prefer web_search or fetch_url, or answer
-        directly if you already have enough information.
-        """
-        sources = runner.run(query)
-        _store_and_index_sources(project_id, store, research_task_id, sources)
-        return _summarize_sources_for_model(sources)
-
     tools: list[BaseTool] = [web_search, fetch_url]
-    if settings.enable_deep_research:
-        tools.append(run_deep_research)
     return tools
 
 
@@ -318,29 +310,7 @@ def build_thinking_tools(
                     "BLOCKED: this turn does not explicitly authorize committing the "
                     "proposal. Present it and ask the user to confirm."
                 )
-            new_state = state.model_copy(deep=True)
-            proposal = new_state.proposal
-            old_direction = new_state.north_star.current_hypothesis
-            new_state.north_star.current_hypothesis = proposal.statement
-            new_state.decisions.append(
-                Decision(
-                    question="Committed project direction",
-                    choice=proposal.statement,
-                    rationale=proposal.rationale,
-                    alternatives=proposal.alternatives_considered,
-                )
-            )
-            new_state.proposal = None
-            if old_direction != new_state.north_star.current_hypothesis:
-                mark_plan_stale(new_state)
-            lowered = new_state.north_star.current_hypothesis.lower()
-            for branch in new_state.branches:
-                if branch.status != BranchStatus.ACTIVE:
-                    continue
-                summary = branch.summary.lower()
-                if branch.name.lower() in lowered or (summary and summary in lowered):
-                    branch.status = BranchStatus.MERGED
-            new_state.mark_updated()
+            new_state = commit_proposal(state)
             holder.project_state = new_state
             return f"Committed direction: {new_state.north_star.current_hypothesis}"
 
@@ -390,7 +360,11 @@ def build_thinking_tools(
                 )
             analysis = deps.planner.analyze(state, request or "Create the next concrete V1 plan.")
             new_state = state.model_copy(deep=True)
-            new_state.next_actions = [a for a in new_state.next_actions if not a.stale]
+            # Drop stale agent-authored steps; keep completed steps and any step
+            # the user added by hand so re-planning sequences around it.
+            new_state.next_actions = [
+                a for a in new_state.next_actions if not a.stale or a.origin == "user"
+            ]
             new_state = planning_service.merge(new_state, analysis)
             new_state.mark_updated()
             holder.project_state = new_state
@@ -504,27 +478,20 @@ def _build_document_tools(
             return f"File does not exist: {pdf_path}"
         if pdf_path.suffix.lower() != ".pdf":
             return "Only PDF files can be ingested here."
-        reader = PdfReader(str(pdf_path))
-        text = "\n\n".join((page.extract_text() or "") for page in reader.pages)
-        if not text.strip():
-            return f"{pdf_path.name} produced no extractable text."
-        document = Document(
-            project_id=project_id, title=pdf_path.name, source_url=str(pdf_path), content=text
-        )
-        index_document(store, project_id, document)
-        chunks = chunk_text(text)
-        for chunk_index, chunk in enumerate(chunks):
-            index_chunk(
+        try:
+            result = ingest_file(
                 store,
                 project_id,
-                DocumentChunk(
-                    document_id=document.id,
-                    project_id=project_id,
-                    chunk_index=chunk_index,
-                    text=chunk,
-                ),
+                filename=pdf_path.name,
+                data=pdf_path.read_bytes(),
+                source_url=str(pdf_path),
             )
-        return f"Ingested {pdf_path.name}: {len(reader.pages)} pages, {len(chunks)} chunks."
+        except IngestError as exc:
+            return str(exc)
+        return (
+            f"Ingested {result.document.title}: "
+            f"{result.page_count} pages, {result.chunk_count} chunks."
+        )
 
     @tool
     def list_indexed_documents() -> str:
@@ -536,8 +503,12 @@ def _build_document_tools(
 
     @tool
     def search_documents(query: str, top_k: int = 5) -> str:
-        """Search indexed documents for grounded Q&A. Returns the most relevant passages;
-        quote them when you use them in your answer."""
+        """Search indexed documents for grounded Q&A.
+
+        Each returned passage is preceded by a citation tag such as
+        ``[[file.pdf p.3]]``. Copy the tag verbatim into your answer for any
+        claim you draw from that passage.
+        """
         return context_retriever.select_document_chunks(
             project_id, query, top_k=max(1, min(top_k, 8))
         )
@@ -616,12 +587,14 @@ def _store_and_index_sources(
                 document_id=document.id,
                 project_id=project_id,
                 chunk_index=chunk_index,
+                document_title=source.title or source.url,
                 text=text,
             )
             index_chunk(store, project_id, chunk)
 
 
 __all__ = [
+    "ResearchSource",
     "ThinkingToolDeps",
     "build_context_tools",
     "build_research_tools",

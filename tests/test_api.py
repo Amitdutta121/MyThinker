@@ -10,6 +10,8 @@ from mythinking.documents import Document
 from mythinking.retrieval import index_document, open_document_store
 from mythinking.state import (
     AssistantTurn,
+    ChatMessage,
+    ChatRole,
     NorthStar,
     ProjectState,
     ThinkingMode,
@@ -39,6 +41,9 @@ class FakeRuntime:
         stream_events: Iterator[TurnStreamEvent] | list[TurnStreamEvent] | None = None,
         stream_error: Exception | None = None,
         store: Any | None = None,
+        histories: dict[str, list[ChatMessage]] | None = None,
+        edit_result: ProjectState | None = None,
+        edit_error: Exception | None = None,
     ) -> None:
         self.turn = turn
         self.project_states = project_states or {}
@@ -49,6 +54,44 @@ class FakeRuntime:
         self.stream_error = stream_error
         self.stream_calls: list[tuple[str, str | None]] = []
         self.store = store
+        self.histories = histories or {}
+        self.edit_result = edit_result
+        self.edit_error = edit_error
+        self.edit_calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    def _edit(self, name: str, *args: Any, **kwargs: Any) -> ProjectState:
+        self.edit_calls.append((name, args, kwargs))
+        if self.edit_error is not None:
+            raise self.edit_error
+        assert self.edit_result is not None
+        return self.edit_result
+
+    def edit_north_star(self, project_id: str, *, title: str | None = None) -> ProjectState:
+        return self._edit("edit_north_star", project_id, title=title)
+
+    def add_decision(self, project_id: str, **kwargs: Any) -> ProjectState:
+        return self._edit("add_decision", project_id, **kwargs)
+
+    def edit_decision(self, project_id: str, decision_id: str, **kwargs: Any) -> ProjectState:
+        return self._edit("edit_decision", project_id, decision_id, **kwargs)
+
+    def delete_decision(self, project_id: str, decision_id: str) -> ProjectState:
+        return self._edit("delete_decision", project_id, decision_id)
+
+    def approve_proposal(self, project_id: str) -> ProjectState:
+        return self._edit("approve_proposal", project_id)
+
+    def dismiss_proposal(self, project_id: str) -> ProjectState:
+        return self._edit("dismiss_proposal", project_id)
+
+    def add_next_action(self, project_id: str, **kwargs: Any) -> ProjectState:
+        return self._edit("add_next_action", project_id, **kwargs)
+
+    def edit_next_action(self, project_id: str, action_id: str, **kwargs: Any) -> ProjectState:
+        return self._edit("edit_next_action", project_id, action_id, **kwargs)
+
+    def delete_next_action(self, project_id: str, action_id: str) -> ProjectState:
+        return self._edit("delete_next_action", project_id, action_id)
 
     def run_turn(self, message: str, project_id: str | None = None) -> AssistantTurn:
         self.calls.append((message, project_id))
@@ -65,6 +108,11 @@ class FakeRuntime:
 
     def get_project_state(self, project_id: str) -> ProjectState | None:
         return self.project_states.get(project_id)
+
+    def get_history(self, project_id: str) -> list[ChatMessage]:
+        if project_id not in self.project_states and project_id not in self.histories:
+            raise KeyError(f"Unknown project_id: {project_id}")
+        return self.histories.get(project_id, [])
 
 
 def test_health_endpoint_reports_ok() -> None:
@@ -232,6 +280,190 @@ def test_get_project_returns_404_for_unknown_project() -> None:
     assert "missing" in response.json()["detail"]
 
 
+def _edit_client(state: ProjectState | None = None, error: Exception | None = None):
+    result = state or ProjectState(north_star=NorthStar(title="Edited"))
+    runtime = FakeRuntime(edit_result=result, edit_error=error)
+    return TestClient(create_app(runtime)), runtime
+
+
+def test_patch_north_star_maps_body_to_runtime_and_returns_state() -> None:
+    client, runtime = _edit_client()
+
+    response = client.patch("/projects/p1/north-star", json={"title": "Personal KB"})
+
+    assert response.status_code == 200
+    assert response.json()["north_star"]["title"] == "Edited"
+    assert runtime.edit_calls == [("edit_north_star", ("p1",), {"title": "Personal KB"})]
+
+
+def test_patch_north_star_unknown_project_is_404() -> None:
+    client, _ = _edit_client(error=KeyError("Unknown project_id: missing"))
+
+    response = client.patch("/projects/missing/north-star", json={"title": "x"})
+
+    assert response.status_code == 404
+    assert "missing" in response.json()["detail"]
+
+
+def test_patch_north_star_blank_title_is_400() -> None:
+    client, _ = _edit_client(error=ValueError("Goal cannot be empty."))
+
+    response = client.patch("/projects/p1/north-star", json={"title": "   "})
+
+    assert response.status_code == 400
+    assert "empty" in response.json()["detail"]
+
+
+def test_create_decision_requires_a_choice() -> None:
+    client, _ = _edit_client()
+
+    response = client.post("/projects/p1/decisions", json={"question": "Sync?"})
+
+    assert response.status_code == 422
+
+
+def test_create_decision_returns_201_and_passes_fields() -> None:
+    client, runtime = _edit_client()
+
+    response = client.post(
+        "/projects/p1/decisions",
+        json={"question": "Sync?", "choice": "Single-device", "reversible": False},
+    )
+
+    assert response.status_code == 201
+    name, args, kwargs = runtime.edit_calls[0]
+    assert name == "add_decision"
+    assert args == ("p1",)
+    assert kwargs["choice"] == "Single-device"
+    assert kwargs["reversible"] is False
+
+
+def test_patch_and_delete_decision_route_to_runtime() -> None:
+    client, runtime = _edit_client()
+
+    client.patch("/projects/p1/decisions/d9", json={"rationale": "cheaper"})
+    client.delete("/projects/p1/decisions/d9")
+
+    assert runtime.edit_calls[0][:2] == ("edit_decision", ("p1", "d9"))
+    assert runtime.edit_calls[0][2]["rationale"] == "cheaper"
+    assert runtime.edit_calls[1][:2] == ("delete_decision", ("p1", "d9"))
+
+
+def test_delete_decision_unknown_id_is_404() -> None:
+    client, _ = _edit_client(error=KeyError("Unknown decision_id: d9"))
+
+    response = client.delete("/projects/p1/decisions/d9")
+
+    assert response.status_code == 404
+
+
+def test_approve_proposal_routes_to_runtime() -> None:
+    client, runtime = _edit_client()
+
+    response = client.post("/projects/p1/proposal/approve")
+
+    assert response.status_code == 200
+    assert runtime.edit_calls == [("approve_proposal", ("p1",), {})]
+
+
+def test_approve_proposal_without_a_proposal_is_400() -> None:
+    client, _ = _edit_client(error=ValueError("There is no pending proposal to approve."))
+
+    response = client.post("/projects/p1/proposal/approve")
+
+    assert response.status_code == 400
+    assert "proposal" in response.json()["detail"]
+
+
+def test_dismiss_proposal_routes_to_runtime() -> None:
+    client, runtime = _edit_client()
+
+    response = client.delete("/projects/p1/proposal")
+
+    assert response.status_code == 200
+    assert runtime.edit_calls == [("dismiss_proposal", ("p1",), {})]
+
+
+def test_create_next_action_returns_201_and_passes_fields() -> None:
+    client, runtime = _edit_client()
+
+    response = client.post(
+        "/projects/p1/next-actions",
+        json={"description": "Call three users", "time_box_minutes": 45},
+    )
+
+    assert response.status_code == 201
+    name, args, kwargs = runtime.edit_calls[0]
+    assert name == "add_next_action"
+    assert args == ("p1",)
+    assert kwargs["description"] == "Call three users"
+    assert kwargs["time_box_minutes"] == 45
+
+
+def test_create_next_action_rejects_zero_time_box() -> None:
+    client, _ = _edit_client()
+
+    response = client.post(
+        "/projects/p1/next-actions",
+        json={"description": "x", "time_box_minutes": 0},
+    )
+
+    assert response.status_code == 422
+
+
+def test_patch_and_delete_next_action_route_to_runtime() -> None:
+    client, runtime = _edit_client()
+
+    client.patch("/projects/p1/next-actions/a3", json={"completed": True})
+    client.delete("/projects/p1/next-actions/a3")
+
+    assert runtime.edit_calls[0][:2] == ("edit_next_action", ("p1", "a3"))
+    assert runtime.edit_calls[0][2]["completed"] is True
+    assert runtime.edit_calls[1][:2] == ("delete_next_action", ("p1", "a3"))
+
+
+def test_get_project_messages_replays_the_transcript() -> None:
+    state = ProjectState(north_star=NorthStar(title="Has history"))
+    runtime = FakeRuntime(
+        project_states={state.project_id: state},
+        histories={
+            state.project_id: [
+                ChatMessage(role=ChatRole.USER, content="Help me think"),
+                ChatMessage(role=ChatRole.ASSISTANT, content="What's the goal?"),
+            ]
+        },
+    )
+    client = TestClient(create_app(runtime))
+
+    response = client.get(f"/projects/{state.project_id}/messages")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"role": "user", "content": "Help me think"},
+        {"role": "assistant", "content": "What's the goal?"},
+    ]
+
+
+def test_get_project_messages_returns_empty_list_for_a_never_run_project() -> None:
+    state = ProjectState(north_star=NorthStar(title="No history yet"))
+    runtime = FakeRuntime(project_states={state.project_id: state})
+    client = TestClient(create_app(runtime))
+
+    response = client.get(f"/projects/{state.project_id}/messages")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_project_messages_returns_404_for_unknown_project() -> None:
+    client = TestClient(create_app(FakeRuntime()))
+
+    response = client.get("/projects/missing/messages")
+
+    assert response.status_code == 404
+    assert "missing" in response.json()["detail"]
+
+
 class _FakeEmbeddings(Embeddings):
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self.embed_query(t) for t in texts]
@@ -264,6 +496,135 @@ def test_list_project_documents_returns_stored_documents(tmp_path: Path) -> None
         body = response.json()
         assert len(body) == 1
         assert body[0]["title"] == "A source"
+
+
+def test_upload_project_document_ingests_and_lists_it(tmp_path: Path) -> None:
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=1) as store:
+        state = ProjectState(north_star=NorthStar(title="Has an upload"))
+        runtime = FakeRuntime(project_states={state.project_id: state}, store=store)
+        client = TestClient(create_app(runtime))
+
+        response = client.post(
+            f"/projects/{state.project_id}/documents",
+            params={"filename": "notes.md"},
+            content=b"# Heading\n\nSome body text worth indexing.",
+        )
+
+        assert response.status_code == 201
+        assert response.json()["title"] == "notes.md"
+
+        listed = client.get(f"/projects/{state.project_id}/documents")
+        assert [d["title"] for d in listed.json()] == ["notes.md"]
+
+
+def test_upload_project_document_unknown_project_is_404(tmp_path: Path) -> None:
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=1) as store:
+        runtime = FakeRuntime(store=store)
+        client = TestClient(create_app(runtime))
+
+        response = client.post(
+            "/projects/missing/documents", params={"filename": "a.txt"}, content=b"hello"
+        )
+
+        assert response.status_code == 404
+
+
+def test_upload_project_document_rejects_bad_file_with_422(tmp_path: Path) -> None:
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=1) as store:
+        state = ProjectState(north_star=NorthStar(title="Bad upload"))
+        runtime = FakeRuntime(project_states={state.project_id: state}, store=store)
+        client = TestClient(create_app(runtime))
+
+        response = client.post(
+            f"/projects/{state.project_id}/documents",
+            params={"filename": "malware.exe"},
+            content=b"MZ",
+        )
+
+        assert response.status_code == 422
+        assert "Unsupported file type" in response.json()["detail"]
+
+
+def test_upload_project_document_without_store_is_503() -> None:
+    state = ProjectState(north_star=NorthStar(title="No store configured"))
+    runtime = FakeRuntime(project_states={state.project_id: state})
+    client = TestClient(create_app(runtime))
+
+    response = client.post(
+        f"/projects/{state.project_id}/documents",
+        params={"filename": "a.txt"},
+        content=b"hello",
+    )
+
+    assert response.status_code == 503
+
+
+def test_delete_project_document_removes_it_and_returns_remaining(tmp_path: Path) -> None:
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=1) as store:
+        keep = Document(project_id="proj-1", title="Keep", content="keep")
+        drop = Document(project_id="proj-1", title="Drop", content="drop")
+        for doc in (keep, drop):
+            index_document(store, "proj-1", doc)
+        client = TestClient(create_app(FakeRuntime(store=store)))
+
+        response = client.delete(f"/projects/proj-1/documents/{drop.id}")
+
+        assert response.status_code == 200
+        assert [d["title"] for d in response.json()] == ["Keep"]
+        listed = client.get("/projects/proj-1/documents")
+        assert [d["id"] for d in listed.json()] == [keep.id]
+
+
+def test_delete_project_document_unknown_id_is_404(tmp_path: Path) -> None:
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=1) as store:
+        client = TestClient(create_app(FakeRuntime(store=store)))
+
+        response = client.delete("/projects/proj-1/documents/missing")
+
+        assert response.status_code == 404
+
+
+def test_delete_project_document_without_store_is_503() -> None:
+    client = TestClient(create_app(FakeRuntime()))
+
+    response = client.delete("/projects/proj-1/documents/whatever")
+
+    assert response.status_code == 503
+
+
+def test_delete_project_documents_bulk_removes_selected(tmp_path: Path) -> None:
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=1) as store:
+        keep = Document(project_id="proj-1", title="Keep")
+        drop_a = Document(project_id="proj-1", title="Drop A")
+        drop_b = Document(project_id="proj-1", title="Drop B")
+        for doc in (keep, drop_a, drop_b):
+            index_document(store, "proj-1", doc)
+        client = TestClient(create_app(FakeRuntime(store=store)))
+
+        response = client.post(
+            "/projects/proj-1/documents/delete",
+            json={"ids": [drop_a.id, "ghost", drop_b.id]},
+        )
+
+        assert response.status_code == 200
+        assert [d["title"] for d in response.json()] == ["Keep"]
+
+
+def test_delete_project_documents_bulk_requires_ids(tmp_path: Path) -> None:
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=1) as store:
+        client = TestClient(create_app(FakeRuntime(store=store)))
+
+        response = client.post("/projects/proj-1/documents/delete", json={"ids": []})
+
+        assert response.status_code == 422
+
+
+def test_delete_project_documents_bulk_without_store_is_503() -> None:
+    client = TestClient(create_app(FakeRuntime()))
+
+    response = client.post("/projects/proj-1/documents/delete", json={"ids": ["a"]})
+
+    assert response.status_code == 503
 
 
 def test_cors_allows_the_frontend_dev_origin() -> None:

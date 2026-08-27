@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from mythinking.config import get_settings
 from mythinking.llm import create_chat_model
+from mythinking.observability import configure_tracing
 from mythinking.persistence import ProfileRepository, StateRepository
 from mythinking.profile import format_profile
 from mythinking.prompts import PromptRegistry
@@ -168,6 +169,7 @@ def _use_utf8_streams() -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     _use_utf8_streams()
+    configure_tracing()
     args = build_parser().parse_args(argv)
     commands = {
         "init": run_init,

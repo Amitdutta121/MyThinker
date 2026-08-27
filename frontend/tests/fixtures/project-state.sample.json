@@ -13,6 +13,15 @@
     "next_action": "Prototype a search index over existing notes."
   },
   "current_mode": "explore",
+  "proposal": {
+    "statement": "Build the local-first desktop app first; defer the browser clipper.",
+    "rationale": "It directly answers the core problem and has the fewest unknowns.",
+    "alternatives_considered": [
+      "Lead with the browser extension clipper",
+      "Do both in parallel"
+    ],
+    "created_at": "2026-08-23T14:00:00Z"
+  },
   "active_branch_id": "branch-1",
   "branches": [
     {
@@ -34,7 +43,22 @@
       "created_at": "2026-08-21T09:00:00Z"
     }
   ],
-  "assumptions": [],
+  "assumptions": [
+    {
+      "id": "assumption-1",
+      "statement": "Users will trust a local-only store without cloud backup.",
+      "status": "challenged",
+      "importance": 4,
+      "falsifying_evidence": "A user loses notes to a disk failure and churns."
+    },
+    {
+      "id": "assumption-2",
+      "statement": "Full-text search is the primary way notes get resurfaced.",
+      "status": "untested",
+      "importance": 2,
+      "falsifying_evidence": ""
+    }
+  ],
   "evidence": [
     {
       "id": "evidence-1",
@@ -55,7 +79,24 @@
       "captured_at": "2026-08-21T08:00:00Z"
     }
   ],
-  "research_tasks": [],
+  "research_tasks": [
+    {
+      "id": "research-1",
+      "question": "How do comparable local-first note apps handle backup and recovery?",
+      "status": "open",
+      "notes": "Look at Obsidian, Logseq, Bear.",
+      "linked_evidence_ids": [],
+      "created_at": "2026-08-22T09:00:00Z"
+    },
+    {
+      "id": "research-2",
+      "question": "Can SQLite FTS5 scale to the note volume we expect?",
+      "status": "answered",
+      "notes": "Yes — see evidence-1.",
+      "linked_evidence_ids": ["evidence-1"],
+      "created_at": "2026-08-21T09:00:00Z"
+    }
+  ],
   "decisions": [
     {
       "id": "decision-1",
@@ -75,7 +116,8 @@
       "failure_signal": "Setup takes more than a day.",
       "time_box_minutes": 60,
       "implementation_intention": "This evening after dinner.",
-      "completed": false
+      "completed": false,
+      "stale": false
     }
   ],
   "open_questions": ["Should tags be freeform or structured?"],

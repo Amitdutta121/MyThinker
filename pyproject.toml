@@ -12,7 +12,6 @@ dependencies = [
   "beautifulsoup4>=4.15.0",
   "ddgs>=9.15.0",
   "fastapi>=0.115",
-  "gpt-researcher>=0.15,<0.16",
   "httpx>=0.27",
   "langchain>=1.0",
   "langchain-openai>=1.0",
@@ -32,6 +31,11 @@ dev = [
   "pytest>=8.3",
   "pytest-cov>=6.0",
   "ruff>=0.9",
+]
+# Opt-in tracing/UI. Install with `uv sync --group observability`; the app
+# imports mlflow lazily so the core install stays lean.
+observability = [
+  "mlflow>=3.1",
 ]
 
 [project.scripts]

@@ -72,12 +72,27 @@ uv run mythinking serve
 ```
 
 ```text
-GET  /health                 liveness check
-POST /turns                  {"message": "...", "project_id": "..."} -> AssistantTurn
-POST /turns/stream           same request body -> text/event-stream of TurnStreamEvent frames
-GET  /projects?limit=20      recent project summaries, newest first
-GET  /projects/{project_id}  full ProjectState
+GET    /health                                   liveness check
+POST   /turns                                    {"message": "...", "project_id": "..."} -> AssistantTurn
+POST   /turns/stream                             same request body -> text/event-stream of TurnStreamEvent frames
+GET    /projects?limit=20                        recent project summaries, newest first
+GET    /projects/{project_id}                    full ProjectState
+
+# Direct edits (no agent turn). Each returns the updated ProjectState;
+# KeyError -> 404, ValueError -> 400. Logic lives in runtime.py / board.py.
+PATCH  /projects/{id}/north-star                 {"title": "..."}
+POST   /projects/{id}/decisions                  {"question?": "...", "choice": "...", "rationale?": "...", "reversible?": true}
+PATCH  /projects/{id}/decisions/{decision_id}    partial of the same fields
+DELETE /projects/{id}/decisions/{decision_id}
+POST   /projects/{id}/proposal/approve           commit the pending proposal verbatim
+DELETE /projects/{id}/proposal                   dismiss the pending proposal
+POST   /projects/{id}/next-actions               {"description": "...", "time_box_minutes?": 30, ...}  (origin="user")
+PATCH  /projects/{id}/next-actions/{action_id}   partial; also toggles completed
+DELETE /projects/{id}/next-actions/{action_id}
 ```
+
+User-added plan steps (`origin="user"`) survive re-planning and are not marked
+stale by a direction change; the agent sequences its own steps around them.
 
 `POST /turns/stream` streams one Server-Sent Event per tool the agent runs
 (`{"type": "node", "node": "<tool name>"}`), followed by a final
@@ -101,9 +116,8 @@ sensitive personal details) is off by default. Set
 was captured with `uv run mythinking profile`.
 
 Research is agentic and built into the one agent: it always has `web_search`
-and `fetch_url` (plus `run_deep_research`, a real multi-source pass via
-`gpt-researcher`, only when `MYTHINKING_ENABLE_DEEP_RESEARCH=true`) and decides
-for itself, from each tool's description, whether it needs them. Fetched web
+and `fetch_url`, and decides for itself, from each tool's description, whether
+it needs them. Fetched web
 and document content is source material -- it becomes project evidence only via
 an explicit `save_evidence` call that passes a source-support and
 project-relevance check. The web-search retriever
@@ -111,7 +125,10 @@ defaults to the free, keyless DuckDuckGo (`ddgs`); set
 `MYTHINKING_RESEARCH_RETRIEVER=tavily` and `TAVILY_API_KEY` to use Tavily
 instead. Fetched content is stored in `data/store.sqlite` (a LangGraph
 `SqliteStore`, separate from `state.sqlite`) and is listable via
-`GET /projects/{project_id}/documents`. Ordinary chat replies get the same
+`GET /projects/{project_id}/documents`. `search_documents` returns each passage
+under a citation tag -- `[[file.pdf p.3]]` for an ingested PDF (chunked page by
+page), `[[Title]]` for a web source -- and the system prompt requires those tags
+to be copied verbatim into any document-grounded answer. Ordinary chat replies get the same
 kind of self-directed lookup, scoped to the project's own saved
 evidence/research-tasks/branches/next-actions (no internet access) --
 the assistant calls a tool like `get_evidence_ledger` only when a turn's
@@ -166,15 +183,14 @@ src/mythinking/
   llm.py          The only model-construction boundary
   state.py        Typed thinking and project state
   persistence.py  Project snapshots and LangGraph checkpoints
-  documents.py    Full-text research documents and chunks (outside ProjectState)
+  documents.py    Full-text research documents and chunks, page-tracked for PDFs (outside ProjectState)
   retrieval.py    Typed wrapper around LangGraph's SqliteStore for semantic search
   context.py      Scoped per-agent context formatting and threshold-based retrieval
-  deep_research.py  gpt-researcher integration, wrapped as a tool (M9)
   gates.py        North Star / decision / evidence structured-output gates (M10)
   board.py        MutableStateHolder, derive_mode, plan staleness, frame merge (M10)
   tools.py        The agent's tools: state-changing thinking tools with
                   deterministic preconditions, read-only lookups, document tools,
-                  and the web tools (web_search, fetch_url, run_deep_research)
+                  and the web tools (web_search, fetch_url)
   prompts.py      Versioned prompt registry
   agent.py        The single create_agent loop + context-injection middleware (M10)
   runtime.py      Turn orchestration and persistence

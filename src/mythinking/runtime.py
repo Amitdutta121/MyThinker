@@ -6,11 +6,11 @@ classifier, no drift pipeline -- tool selection is the model's own and tool
 preconditions keep the board correct.
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.store.sqlite import SqliteStore
 
 from mythinking.agent import build_thinker
@@ -20,7 +20,7 @@ from mythinking.agents.frame_analyst import FrameAnalyst
 from mythinking.agents.planner import Planner
 from mythinking.agents.profile_extractor import ProfileExtractor
 from mythinking.agents.synthesizer import Synthesizer
-from mythinking.board import MutableStateHolder, derive_mode
+from mythinking.board import MutableStateHolder, commit_proposal, derive_mode
 from mythinking.config import Settings, get_settings
 from mythinking.context import ContextRetriever
 from mythinking.llm import create_chat_model, create_embeddings_model
@@ -30,6 +30,10 @@ from mythinking.prompts import PromptRegistry
 from mythinking.retrieval import open_document_store
 from mythinking.state import (
     AssistantTurn,
+    ChatMessage,
+    ChatRole,
+    Decision,
+    NextAction,
     ProjectState,
     TurnStreamEvent,
     TurnStreamEventType,
@@ -154,8 +158,210 @@ class ThinkingRuntime:
     def get_project_state(self, project_id: str) -> ProjectState | None:
         return self.repository.load(project_id)
 
+    def get_history(self, project_id: str) -> list[ChatMessage]:
+        """Replay a project's user/assistant transcript from the checkpointer.
+
+        Tool calls and tool results are dropped -- the frontend transcript
+        shows only what the user typed and what the Thinker said back. Raises
+        `KeyError` for an unknown project and returns `[]` for a known project
+        that has never run a turn (so has no checkpoint yet).
+        """
+        if self.repository.load(project_id) is None:
+            raise KeyError(f"Unknown project_id: {project_id}")
+        with open_sqlite_checkpointer(self.checkpoint_database_path) as checkpointer:
+            snapshot = checkpointer.get_tuple({"configurable": {"thread_id": project_id}})
+        if snapshot is None:
+            return []
+        raw = snapshot.checkpoint.get("channel_values", {}).get("messages", [])
+        return _history_from_messages(raw)
+
     def get_user_profile(self) -> UserProfile:
         return self.profile_repository.load()
+
+    # ------------------------------------------------------------ direct edits
+    #
+    # Deterministic, agent-free mutations invoked by the UI (goal line, the
+    # decisions list, manual plan steps). Each loads the persisted board,
+    # mutates a deep copy, re-derives the display mode, persists, and returns
+    # the new state. `KeyError` -> 404 and `ValueError` -> 400 in `api.py`.
+
+    def _apply_edit(self, project_id: str, mutate: Callable[[ProjectState], None]) -> ProjectState:
+        state = self.repository.load(project_id)
+        if state is None:
+            raise KeyError(f"Unknown project_id: {project_id}")
+        draft = state.model_copy(deep=True)
+        mutate(draft)
+        draft.current_mode = derive_mode(draft)
+        draft.mark_updated()
+        self.repository.save(draft)
+        return draft
+
+    def edit_north_star(self, project_id: str, *, title: str | None = None) -> ProjectState:
+        def mutate(state: ProjectState) -> None:
+            if title is not None:
+                cleaned = title.strip()
+                if not cleaned:
+                    raise ValueError("Goal cannot be empty.")
+                state.north_star.title = cleaned
+
+        return self._apply_edit(project_id, mutate)
+
+    def add_decision(
+        self,
+        project_id: str,
+        *,
+        question: str = "",
+        choice: str,
+        rationale: str = "",
+        reversible: bool = True,
+    ) -> ProjectState:
+        def mutate(state: ProjectState) -> None:
+            picked = choice.strip()
+            if not picked:
+                raise ValueError("A decision needs a choice.")
+            state.decisions.append(
+                Decision(
+                    question=question.strip() or "Recorded decision",
+                    choice=picked,
+                    rationale=rationale.strip(),
+                    reversible=reversible,
+                )
+            )
+
+        return self._apply_edit(project_id, mutate)
+
+    def edit_decision(
+        self,
+        project_id: str,
+        decision_id: str,
+        *,
+        question: str | None = None,
+        choice: str | None = None,
+        rationale: str | None = None,
+        reversible: bool | None = None,
+    ) -> ProjectState:
+        def mutate(state: ProjectState) -> None:
+            for decision in state.decisions:
+                if decision.id != decision_id:
+                    continue
+                if question is not None:
+                    decision.question = question.strip()
+                if choice is not None:
+                    picked = choice.strip()
+                    if not picked:
+                        raise ValueError("A decision needs a choice.")
+                    decision.choice = picked
+                if rationale is not None:
+                    decision.rationale = rationale.strip()
+                if reversible is not None:
+                    decision.reversible = reversible
+                return
+            raise KeyError(f"Unknown decision_id: {decision_id}")
+
+        return self._apply_edit(project_id, mutate)
+
+    def delete_decision(self, project_id: str, decision_id: str) -> ProjectState:
+        def mutate(state: ProjectState) -> None:
+            kept = [d for d in state.decisions if d.id != decision_id]
+            if len(kept) == len(state.decisions):
+                raise KeyError(f"Unknown decision_id: {decision_id}")
+            state.decisions = kept
+
+        return self._apply_edit(project_id, mutate)
+
+    def approve_proposal(self, project_id: str) -> ProjectState:
+        state = self.repository.load(project_id)
+        if state is None:
+            raise KeyError(f"Unknown project_id: {project_id}")
+        if state.proposal is None:
+            raise ValueError("There is no pending proposal to approve.")
+        draft = commit_proposal(state)
+        draft.current_mode = derive_mode(draft)
+        draft.mark_updated()
+        self.repository.save(draft)
+        return draft
+
+    def dismiss_proposal(self, project_id: str) -> ProjectState:
+        def mutate(state: ProjectState) -> None:
+            state.proposal = None
+
+        return self._apply_edit(project_id, mutate)
+
+    def add_next_action(
+        self,
+        project_id: str,
+        *,
+        description: str,
+        time_box_minutes: int = 30,
+        implementation_intention: str = "",
+        success_signal: str = "",
+        failure_signal: str = "",
+    ) -> ProjectState:
+        def mutate(state: ProjectState) -> None:
+            desc = description.strip()
+            if not desc:
+                raise ValueError("A plan step needs a description.")
+            if time_box_minutes < 1:
+                raise ValueError("time_box_minutes must be at least 1.")
+            state.next_actions.append(
+                NextAction(
+                    description=desc,
+                    time_box_minutes=time_box_minutes,
+                    implementation_intention=implementation_intention.strip(),
+                    success_signal=success_signal.strip(),
+                    failure_signal=failure_signal.strip(),
+                    origin="user",
+                )
+            )
+
+        return self._apply_edit(project_id, mutate)
+
+    def edit_next_action(
+        self,
+        project_id: str,
+        action_id: str,
+        *,
+        description: str | None = None,
+        time_box_minutes: int | None = None,
+        implementation_intention: str | None = None,
+        success_signal: str | None = None,
+        failure_signal: str | None = None,
+        completed: bool | None = None,
+    ) -> ProjectState:
+        def mutate(state: ProjectState) -> None:
+            for action in state.next_actions:
+                if action.id != action_id:
+                    continue
+                if description is not None:
+                    desc = description.strip()
+                    if not desc:
+                        raise ValueError("A plan step needs a description.")
+                    action.description = desc
+                if time_box_minutes is not None:
+                    if time_box_minutes < 1:
+                        raise ValueError("time_box_minutes must be at least 1.")
+                    action.time_box_minutes = time_box_minutes
+                if implementation_intention is not None:
+                    action.implementation_intention = implementation_intention.strip()
+                if success_signal is not None:
+                    action.success_signal = success_signal.strip()
+                if failure_signal is not None:
+                    action.failure_signal = failure_signal.strip()
+                if completed is not None:
+                    action.completed = completed
+                return
+            raise KeyError(f"Unknown action_id: {action_id}")
+
+        return self._apply_edit(project_id, mutate)
+
+    def delete_next_action(self, project_id: str, action_id: str) -> ProjectState:
+        def mutate(state: ProjectState) -> None:
+            kept = [a for a in state.next_actions if a.id != action_id]
+            if len(kept) == len(state.next_actions):
+                raise KeyError(f"Unknown action_id: {action_id}")
+            state.next_actions = kept
+
+        return self._apply_edit(project_id, mutate)
 
     # ----------------------------------------------------------------- internal
 
@@ -198,16 +404,30 @@ class ThinkingRuntime:
                 holder,
                 checkpointer=checkpointer,
             )
-            for update in agent.stream(
+            for stream_mode, chunk in agent.stream(
                 {"messages": [("user", message)]},
                 config={"configurable": {"thread_id": holder.project_state.project_id}},
-                stream_mode="updates",
+                stream_mode=["updates", "messages"],
             ):
-                for node_output in update.values():
+                if stream_mode == "messages":
+                    # Token deltas for the answer as it is generated. Segments
+                    # that carry tool calls are the model deciding to act, not
+                    # talking to the user -- skip those; the frontend also
+                    # resets its buffer on each NODE event.
+                    message_chunk, _metadata = chunk
+                    if isinstance(message_chunk, AIMessage) and not getattr(
+                        message_chunk, "tool_call_chunks", None
+                    ):
+                        delta = _message_text(message_chunk)
+                        if delta:
+                            yield TurnStreamEvent(type=TurnStreamEventType.TOKEN, detail=delta)
+                    continue
+
+                for node_output in chunk.values():
                     for msg in (node_output or {}).get("messages", []) or []:
-                        name = getattr(msg, "name", None)
-                        if name:
-                            yield TurnStreamEvent(type=TurnStreamEventType.NODE, node=name)
+                        if isinstance(msg, ToolMessage):
+                            if msg.name:
+                                yield TurnStreamEvent(type=TurnStreamEventType.NODE, node=msg.name)
                         elif isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
                             text = _message_text(msg)
                             if text:
@@ -274,6 +494,29 @@ def _final_text(result: dict[str, Any]) -> str:
             if text:
                 return text
     return ""
+
+
+def _history_from_messages(raw: Any) -> list[ChatMessage]:
+    """Project a LangGraph message list down to a display transcript.
+
+    Keeps human turns and final assistant turns; drops system messages, tool
+    calls, and tool results. Empty-content messages (an assistant turn that was
+    only a tool call) are skipped.
+    """
+    history: list[ChatMessage] = []
+    for message in raw or []:
+        if isinstance(message, HumanMessage):
+            role: ChatRole | None = ChatRole.USER
+        elif isinstance(message, AIMessage) and not getattr(message, "tool_calls", None):
+            role = ChatRole.ASSISTANT
+        else:
+            role = None
+        if role is None:
+            continue
+        text = _message_text(message).strip()
+        if text:
+            history.append(ChatMessage(role=role, content=text))
+    return history
 
 
 def _message_text(message: Any) -> str:

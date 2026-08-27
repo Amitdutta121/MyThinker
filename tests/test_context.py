@@ -187,3 +187,24 @@ def test_context_retriever_select_document_chunks_reports_none_when_empty() -> N
     rendered = retriever.select_document_chunks("proj1", "query")
 
     assert rendered == "No research sources retrieved yet."
+
+
+def test_context_retriever_select_document_chunks_prefixes_page_citation_tags() -> None:
+    store = _FakeStore(
+        results=[
+            _FakeSearchItem(
+                "c1",
+                {"text": "Vitamin D matters.", "page": 3, "document_title": "health.pdf"},
+            ),
+            _FakeSearchItem(
+                "c2",
+                {"text": "A blog claim.", "document_title": "Example Blog"},
+            ),
+        ]
+    )
+    retriever = ContextRetriever(store, threshold=5, top_k=3)
+
+    rendered = retriever.select_document_chunks("proj1", "vitamin d")
+
+    assert "[[health.pdf p.3]]\nVitamin D matters." in rendered
+    assert "[[Example Blog]]\nA blog claim." in rendered
