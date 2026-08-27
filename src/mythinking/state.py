@@ -45,61 +45,10 @@ class AssumptionStatus(StrEnum):
     REJECTED = "rejected"
 
 
-class DriftStatus(StrEnum):
-    ON_TRACK = "on_track"
-    INSUFFICIENT_CONTEXT = "insufficient_context"
-    AMBIGUOUS = "ambiguous"
-    DRIFTED = "drifted"
-
-
-class TangentDisposition(StrEnum):
-    NONE = "none"
-    BRANCH = "branch"
-    PARKED = "parked"
-
-
-class DriftSignal(StrEnum):
-    MISSING_ANCHOR = "missing_anchor"
-    LOW_ANCHOR_OVERLAP = "low_anchor_overlap"
-    EXPLICIT_TANGENT = "explicit_tangent"
-    PARKING_LANGUAGE = "parking_language"
-    MODEL_FALLBACK = "model_fallback"
-
-
-class BranchCommandAction(StrEnum):
-    NONE = "none"
-    SWITCH = "switch"
-    RETURN_TO_MAIN = "return_to_main"
-
-
 class ResearchTaskStatus(StrEnum):
     OPEN = "open"
     ANSWERED = "answered"
     DROPPED = "dropped"
-
-
-class IntentAction(StrEnum):
-    NONE = "none"
-    EXPLORE = "explore"
-    CONVERGE = "converge"
-
-
-class ResearchTrigger(StrEnum):
-    NONE = "none"
-    EXPLICIT_REQUEST = "explicit_request"
-
-
-class PlanTrigger(StrEnum):
-    NONE = "none"
-    EXPLICIT_REQUEST = "explicit_request"
-
-
-class TurnIntent(StrEnum):
-    NONE = "none"
-    EXPLORE = "explore"
-    CONVERGE = "converge"
-    RESEARCH = "research"
-    PLAN = "plan"
 
 
 class NorthStar(BaseModel):
@@ -171,6 +120,21 @@ class NextAction(BaseModel):
     time_box_minutes: int = Field(default=30, ge=1)
     implementation_intention: str = ""
     completed: bool = False
+    stale: bool = False
+
+
+class DirectionProposal(BaseModel):
+    """An assistant recommendation for the project's direction, not yet committed.
+
+    Written only by `converge_ideas`; cleared by `commit_proposed_direction`.
+    A proposal is never a decision -- the committed direction lives in
+    `NorthStar.current_hypothesis` and is only set on explicit user authorization.
+    """
+
+    statement: str
+    rationale: str = ""
+    alternatives_considered: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class NorthStarUpdate(BaseModel):
@@ -260,32 +224,6 @@ class SynthesizerAnalysis(BaseModel):
     rationale: str = ""
 
 
-class IntentClassification(BaseModel):
-    """Semantic classification of what a turn is asking for, from a single LLM call.
-
-    Downstream nodes derive `ExplorationIntent`/`ResearchIntent`/`PlanIntent`
-    from this one result so `choose_mode` (which only reads those three
-    typed objects) is unaffected by how the classification was produced.
-    """
-
-    intent: TurnIntent = TurnIntent.NONE
-
-
-class ExplorationIntent(BaseModel):
-    """Deterministic classification of an explicit explore/converge request."""
-
-    action: IntentAction = IntentAction.NONE
-    matched_text: str = ""
-
-
-class ResearchIntent(BaseModel):
-    """Deterministic classification of an explicit request to enter research mode."""
-
-    trigger: ResearchTrigger = ResearchTrigger.NONE
-    research_task_id: str = ""
-    matched_text: str = ""
-
-
 class ResearcherAnalysis(BaseModel):
     """Structured scoped-research answer used by the M5 graph."""
 
@@ -303,13 +241,6 @@ class NextActionDraft(BaseModel):
     failure_signal: str = ""
     time_box_minutes: int = Field(default=30, ge=1)
     implementation_intention: str = ""
-
-
-class PlanIntent(BaseModel):
-    """Deterministic classification of an explicit request to plan the next action."""
-
-    trigger: PlanTrigger = PlanTrigger.NONE
-    matched_text: str = ""
 
 
 class PlannerAnalysis(BaseModel):
@@ -349,36 +280,6 @@ class ProfileAnalysis(BaseModel):
     profile_update: UserProfileUpdate = Field(default_factory=UserProfileUpdate)
 
 
-class DriftAssessment(BaseModel):
-    """Drift classification for the current turn, deterministic or model-resolved."""
-
-    status: DriftStatus = DriftStatus.ON_TRACK
-    disposition: TangentDisposition = TangentDisposition.NONE
-    reason: str = ""
-    tangent_summary: str = ""
-    branch_name: str = ""
-    signals: list[DriftSignal] = Field(default_factory=list)
-
-
-class DriftJudgment(BaseModel):
-    """Structured fallback judgment returned by the model when heuristics are inconclusive."""
-
-    status: DriftStatus = DriftStatus.ON_TRACK
-    disposition: TangentDisposition = TangentDisposition.NONE
-    reason: str = ""
-    tangent_summary: str = ""
-    branch_name: str = ""
-
-
-class BranchCommand(BaseModel):
-    """Deterministic classification of an explicit branch-navigation request."""
-
-    action: BranchCommandAction = BranchCommandAction.NONE
-    target_branch_id: str | None = None
-    target_branch_name: str = ""
-    matched_text: str = ""
-
-
 class AssistantTurn(BaseModel):
     """Structured assistant response returned by the runtime."""
 
@@ -416,10 +317,11 @@ class ProjectState(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
 
-    schema_version: int = 1
+    schema_version: int = 2
     project_id: str = Field(default_factory=new_id)
     north_star: NorthStar = Field(default_factory=NorthStar)
     current_mode: ThinkingMode = ThinkingMode.CAPTURE
+    proposal: DirectionProposal | None = None
     active_branch_id: str | None = None
     branches: list[IdeaBranch] = Field(default_factory=list)
     assumptions: list[Assumption] = Field(default_factory=list)
@@ -442,24 +344,3 @@ class ProjectState(BaseModel):
 
     def mark_updated(self) -> None:
         self.updated_at = utc_now()
-
-
-class SessionGraphState(BaseModel):
-    """Thread-scoped state passed through the LangGraph workflow."""
-
-    project_state: ProjectState
-    user_message: str = Field(min_length=1)
-    branch_command: BranchCommand | None = None
-    frame_analysis: FrameAnalysis | None = None
-    drift_assessment: DriftAssessment | None = None
-    evidence_analysis: EvidenceAnalysis | None = None
-    intent_classification: IntentClassification | None = None
-    exploration_intent: ExplorationIntent | None = None
-    exploration_analysis: ExplorerAnalysis | None = None
-    synthesis: SynthesizerAnalysis | None = None
-    research_intent: ResearchIntent | None = None
-    research_analysis: ResearcherAnalysis | None = None
-    plan_intent: PlanIntent | None = None
-    planner_analysis: PlannerAnalysis | None = None
-    profile_analysis: ProfileAnalysis | None = None
-    assistant_turn: AssistantTurn | None = None

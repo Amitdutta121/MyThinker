@@ -193,10 +193,13 @@ class _FakeStore:
 
 
 def test_build_context_tools_expose_real_project_state() -> None:
-    project_state = _project_state_with_notes()
-    context_retriever = ContextRetriever(_FakeStore(), threshold=1000, top_k=3)
-    tools = {t.name: t for t in build_context_tools(project_state, context_retriever)}
+    from mythinking.board import MutableStateHolder
 
+    holder = MutableStateHolder(project_state=_project_state_with_notes())
+    context_retriever = ContextRetriever(_FakeStore(), threshold=1000, top_k=3)
+    tools = {t.name: t for t in build_context_tools(holder, context_retriever)}
+
+    assert "get_project_snapshot" in tools
     assert "Users churn early" in tools["get_evidence_ledger"].invoke({"topic": "churn"})
     assert "Is there real demand?" in tools["get_open_research_tasks"].invoke({})
     assert "Newsletter" in tools["get_branch_alternatives"].invoke({})

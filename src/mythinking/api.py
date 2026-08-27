@@ -3,7 +3,7 @@ M7b: SSE streaming of turns).
 
 This module is a thin adapter: every request maps directly onto an existing
 `ThinkingRuntime`/`StateRepository` method. It holds no business logic of its
-own, so the graph and specialists stay testable without the API running.
+own, so the agent and its tools stay testable without the API running.
 """
 
 from collections.abc import Iterator

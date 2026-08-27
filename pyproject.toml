@@ -21,6 +21,7 @@ dependencies = [
   "langgraph-checkpoint-sqlite>=3.0",
   "pydantic>=2.10",
   "pydantic-settings>=2.7",
+  "pypdf>=5.0",
   "pyyaml>=6.0.2",
   "tavily-python>=0.8.0",
   "uvicorn>=0.30",

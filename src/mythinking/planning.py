@@ -39,8 +39,8 @@ def format_next_actions(project_state: ProjectState) -> str:
 
     lines: list[str] = []
     for index, action in enumerate(open_actions, start=1):
-        detail = action.description
-        lines.append(f"{index}. {detail} ({action.time_box_minutes}m)")
+        marker = " [stale]" if action.stale else ""
+        lines.append(f"{index}. {action.description} ({action.time_box_minutes}m){marker}")
     return "\n".join(lines)
 
 

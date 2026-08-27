@@ -358,6 +358,58 @@ Acceptance criteria:
 - A `create_agent` loop that ends without producing the expected typed
   output degrades to a safe, honest fallback rather than crashing.
 
+## Milestone 10: single-agent Thinker (architecture pivot)
+
+Validated in `notebooks/thinker_final_architecture_validation (1).ipynb` first:
+one general conversational agent can behave like ChatGPT, use research/document
+tools when needed, and mutate the persistent idea/decision/plan board **only when
+appropriate** -- without an intent classifier and without a hand-wired LangGraph
+router. This milestone replaces the multi-agent orchestration layer with that
+single agent.
+
+Removed:
+
+- `graph.py` (the `StateGraph`, `choose_mode`, `apply_frame_analysis`),
+- `drift.py` and `branching.py` (the drift-detection pipeline stage and explicit
+  branch-navigation machinery),
+- `agents/intent_classifier.py` and `agents/supervisor.py`,
+- `SessionGraphState` and the intent/drift/branch-command state models,
+- `prompts/intent_classifier.*` and `prompts/drift_judge.v1.yaml`.
+
+Added / changed:
+
+- `agent.py`: one `langchain.agents.create_agent` loop (`build_thinker`) with a
+  `wrap_model_call` middleware that injects the authoritative status block, a
+  model-call cap, and `ModelRetryMiddleware`. Tool selection is the router.
+- `tools.py`: `build_thinking_tools` -- eight state-changing tools
+  (`set_north_star`, `explore_ideas`, `converge_ideas`,
+  `commit_proposed_direction`, `record_user_decision`, `create_or_revise_plan`,
+  `park_branch`, `save_evidence`) plus read-only and document tools. Each
+  state-changing tool runs a deterministic precondition under a lock and returns
+  `BLOCKED: ...` on failure -- never a partial mutation.
+- `gates.py`: `NorthStarGate` / `DecisionGate` / `EvidenceGate` structured-output
+  checks and a regex `user_authorized_commitment`.
+- `board.py`: `MutableStateHolder`, `derive_mode` (ThinkingMode is now a
+  display-only label computed after the turn), `mark_plan_stale`,
+  `apply_frame_analysis` (moved from the retired graph).
+- `state.py`: `DirectionProposal` + `ProjectState.proposal`; `NextAction.stale`;
+  `schema_version = 2` (old blobs still load -- the new fields default).
+- `prompts/lead_partner.v10.yaml`: the static single-agent system prompt.
+- Specialist engines (`FrameAnalyst`, `Explorer`, `Synthesizer`, `Planner`,
+  `EvidenceAnalyst`) survive as the structured-output engines invoked *inside*
+  the tools; their scoped v2 prompts are unchanged.
+
+Suggested subagent split (retained for history; this milestone collapses it):
+the former Frame/Drift/Evidence/Explorer/Synthesizer/Researcher/Planner/Profile
+specialists are now tools or post-turn steps behind one agent.
+
+Acceptance criteria (see notebook section 25): ordinary Q&A never mutates the
+board; a clear goal sets the North Star before exploration; ambiguous requests
+do not invent a project; convergence produces a proposal, never a commitment;
+the exact proposal is committed only on explicit authorization; planning cannot
+precede commitment; committing invalidates the old plan; source material is not
+auto-promoted to evidence; a blocked operation is never reported as success.
+
 ## Rules for milestone execution
 
 - Only one milestone should be in active implementation at a time.

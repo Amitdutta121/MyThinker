@@ -128,10 +128,8 @@ def test_create_turn_returns_404_for_unknown_project(monkeypatch) -> None:
 def test_create_turn_stream_emits_node_and_turn_events() -> None:
     final_turn = AssistantTurn(project_id="proj-1", mode=ThinkingMode.CAPTURE, message="ok")
     events = [
-        TurnStreamEvent(type=TurnStreamEventType.NODE, node="capture"),
-        TurnStreamEvent(
-            type=TurnStreamEventType.NODE, node="choose_mode", mode=ThinkingMode.CAPTURE
-        ),
+        TurnStreamEvent(type=TurnStreamEventType.NODE, node="set_north_star"),
+        TurnStreamEvent(type=TurnStreamEventType.NODE, node="explore_ideas"),
         TurnStreamEvent(type=TurnStreamEventType.TURN, turn=final_turn),
     ]
     runtime = FakeRuntime(stream_events=events)

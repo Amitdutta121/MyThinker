@@ -60,9 +60,8 @@ def format_assumptions(project_state: ProjectState) -> str:
 
 
 def format_decisions(project_state: ProjectState) -> str:
-    """Render recorded decisions. Currently inert: nothing in this codebase writes to
-    `ProjectState.decisions` yet, so this returns the empty sentinel today; added for
-    forward-compatibility so a future decision-recording feature has a formatter ready."""
+    """Render recorded decisions. Written by the `commit_proposed_direction` and
+    `record_user_decision` tools."""
 
     if not project_state.decisions:
         return "No decisions recorded yet."
@@ -88,6 +87,37 @@ def format_project_context(project_state: ProjectState) -> str:
         f"Open questions:\n{format_open_questions(project_state)}",
     ]
     return "\n".join(lines)
+
+
+def build_compact_agent_context(project_state: ProjectState) -> str:
+    """Authoritative, always-injected status block for the single Thinker agent.
+
+    Appended to the system message before every model call so tool selection is
+    driven by current structured state, not chat memory.
+    """
+    ns = project_state.north_star
+    active = [b.name for b in project_state.branches if b.status.value == "active"]
+    parked = [b.name for b in project_state.branches if b.status.value == "parked"]
+    proposal = project_state.proposal.statement if project_state.proposal else "(none)"
+    committed = ns.current_hypothesis or "(none)"
+    return "\n".join(
+        [
+            "CURRENT AUTHORITATIVE PROJECT STATUS",
+            "",
+            f"North Star: {ns.problem_statement or ns.title or '(not established)'}",
+            f"Committed direction: {committed}",
+            f"Current AI proposal: {proposal}",
+            f"Active branches: {active or '(none)'}",
+            f"Parked branches: {parked or '(none)'}",
+            f"Evidence items: {len(project_state.evidence)}",
+            f"Open research tasks: "
+            f"{sum(1 for t in project_state.research_tasks if t.status.value == 'open')}",
+            f"Plan steps: {sum(1 for a in project_state.next_actions if not a.completed)}",
+            "",
+            "This status is authoritative over remembered conversation. Use it to decide "
+            "which tools apply; retrieve details with read-only tools when needed.",
+        ]
+    )
 
 
 class ContextRetriever:
@@ -164,6 +194,7 @@ class ContextRetriever:
 
 __all__ = [
     "ContextRetriever",
+    "build_compact_agent_context",
     "format_assumptions",
     "format_decisions",
     "format_north_star_brief",

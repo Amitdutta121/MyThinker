@@ -2,22 +2,27 @@
 
 ## Product contract
 
-MyThinking is a personal, stateful thinking partner. One supervisor owns every
-user-facing response and invokes specialists as bounded tools. Do not implement
-free-form agent-to-agent conversation.
+MyThinking is a personal, stateful thinking partner. Since M10 it is **one
+conversational agent** (`langchain.agents.create_agent`, see `agent.py`) whose
+tool selection is the router. Specialists (framing, exploring, converging,
+planning, evidence) are structured-output engines invoked *inside* tools, not
+peers in a graph. Do not reintroduce a hand-wired workflow or an intent
+classifier; do not implement free-form agent-to-agent conversation.
 
 The system must help the user clarify an idea, expose assumptions and gaps,
-explore alternatives, research evidence, detect drift, preserve useful branches,
-and finish with a decision or next experiment.
+explore alternatives, research evidence, keep the North Star in view, preserve
+useful branches, and finish with a decision or next experiment.
 
 ## Architecture rules
 
-- Use Python 3.11+, LangChain, and LangGraph.
+- Use Python 3.11+ and LangChain (`create_agent` + middleware).
 - Access models only through `mythinking.llm.create_chat_model`.
 - Use OpenRouter through `langchain-openrouter`; never add provider-specific
   calls inside agents.
-- Represent application and graph state with Pydantic models.
-- Keep deterministic state transitions separate from model-driven judgments.
+- Represent application state with Pydantic models.
+- Correctness of board mutations lives in deterministic tool preconditions
+  (`tools.build_thinking_tools`), which fail safe with a `BLOCKED:` string;
+  keep those separate from model-driven judgment.
 - Persist project snapshots and LangGraph checkpoints in local SQLite files.
 - Keep prompts in `prompts/` as versioned YAML specifications.
 - Every behavioral prompt instruction needs an evidence entry or an explicit

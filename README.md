@@ -1,15 +1,21 @@
 # MyThinking
 
-MyThinking is a personal, stateful AI thinking partner. The application will use
-one user-facing supervisor with bounded specialist agents for framing, exploring,
-researching, and synthesizing ideas.
+MyThinking is a personal, stateful AI thinking partner. Since M10 it is **one
+conversational agent** (`langchain.agents.create_agent`) whose tool selection is
+the router. It answers ordinary questions directly and updates a persistent
+idea / decision / plan board only through tools that each enforce a deterministic
+precondition (a North Star must exist before exploration; convergence writes a
+proposal, never a commitment; a commit copies the exact proposal only on explicit
+user authorization; planning requires a committed direction; source material is
+never auto-promoted to evidence). Framing, exploring, converging, and planning
+are structured-output engines invoked inside those tools, not separate agents.
 
-This repository now contains the verified M1 core loop foundation plus the
-first M2a drift-control slice: OpenRouter model configuration, typed project
-and graph state, SQLite persistence, versioned prompt specifications, a
-runnable LangGraph supervisor loop with deterministic tangent preservation, and
-offline tests. It intentionally does not make an API request during setup or
-testing.
+This repository contains OpenRouter model configuration, typed project state,
+SQLite persistence (board, chat checkpoints, and a document store), versioned
+prompt specifications, the single-agent runtime, and offline tests. It
+intentionally does not make an API request during setup or testing. The
+architecture was validated in
+`notebooks/thinker_final_architecture_validation (1).ipynb` before the pivot.
 
 The repo is also prepared for multi-session Codex implementation. The execution
 roadmap and subagent workflow live in:
@@ -73,8 +79,8 @@ GET  /projects?limit=20      recent project summaries, newest first
 GET  /projects/{project_id}  full ProjectState
 ```
 
-`POST /turns/stream` streams one Server-Sent Event per graph node as the turn
-runs (`{"type": "node", "node": "...", "mode": "..."}`), followed by a final
+`POST /turns/stream` streams one Server-Sent Event per tool the agent runs
+(`{"type": "node", "node": "<tool name>"}`), followed by a final
 `{"type": "turn", "turn": <AssistantTurn>}` event. A failure that happens after
 streaming has started (the HTTP status is already committed) is delivered as a
 terminal `{"type": "error", "detail": "..."}` event instead of a dropped
@@ -94,15 +100,13 @@ sensitive personal details) is off by default. Set
 `MYTHINKING_ENABLE_PROFILE_EXTRACTION=true` to turn it on, then inspect what
 was captured with `uv run mythinking profile`.
 
-Research mode is agentic: when a turn is classified as a research request,
-the Researcher gets tools (`web_search`, `fetch_url`, and -- only when
-`MYTHINKING_ENABLE_DEEP_RESEARCH=true` -- `run_deep_research`, a real
-multi-source pass via `gpt-researcher`) and decides for itself, from each
-tool's own description, whether it already has enough or needs to use one.
-No Python code gates *when* a tool gets used -- only whether
-`run_deep_research` exists in the toolset at all is controlled by that flag,
-since it's the one that's genuinely expensive. `web_search`/`fetch_url` are
-always available whenever a research turn runs. The web-search retriever
+Research is agentic and built into the one agent: it always has `web_search`
+and `fetch_url` (plus `run_deep_research`, a real multi-source pass via
+`gpt-researcher`, only when `MYTHINKING_ENABLE_DEEP_RESEARCH=true`) and decides
+for itself, from each tool's description, whether it needs them. Fetched web
+and document content is source material -- it becomes project evidence only via
+an explicit `save_evidence` call that passes a source-support and
+project-relevance check. The web-search retriever
 defaults to the free, keyless DuckDuckGo (`ddgs`); set
 `MYTHINKING_RESEARCH_RETRIEVER=tavily` and `TAVILY_API_KEY` to use Tavily
 instead. Fetched content is stored in `data/store.sqlite` (a LangGraph
@@ -166,14 +170,17 @@ src/mythinking/
   retrieval.py    Typed wrapper around LangGraph's SqliteStore for semantic search
   context.py      Scoped per-agent context formatting and threshold-based retrieval
   deep_research.py  gpt-researcher integration, wrapped as a tool (M9)
-  tools.py        Agentic tools for the Researcher (web_search, fetch_url,
-                  run_deep_research) and Supervisor (read-only project-state lookups)
+  gates.py        North Star / decision / evidence structured-output gates (M10)
+  board.py        MutableStateHolder, derive_mode, plan staleness, frame merge (M10)
+  tools.py        The agent's tools: state-changing thinking tools with
+                  deterministic preconditions, read-only lookups, document tools,
+                  and the web tools (web_search, fetch_url, run_deep_research)
   prompts.py      Versioned prompt registry
-  graph.py        Runnable LangGraph workflow
+  agent.py        The single create_agent loop + context-injection middleware (M10)
   runtime.py      Turn orchestration and persistence
   summary.py      Deterministic, offline session summary rendering
   api.py          HTTP API over the runtime (M7a non-streaming + M7b SSE streaming)
-  agents/         Supervisor and specialist agents
+  agents/         Specialist structured-output engines invoked inside tools
   cli.py          Local setup, smoke, chat, list, show, and serve commands
 prompts/           Research-linked prompt specifications
 evals/             Offline behavioral evaluation cases
@@ -188,23 +195,18 @@ dedicated `langchain-openrouter` package. See the
 
 ## Current runnable flow
 
-The current CLI runs the first M1 workflow:
+Each turn:
 
 ```text
-capture -> frame -> choose_mode -> respond -> persist
+load board -> run the Thinker agent (tools enforce preconditions,
+mutate the board in place) -> derive display mode -> persist -> AssistantTurn
 ```
 
-The current verified runtime flow is:
-
-```text
-capture -> frame -> detect_drift -> choose_mode -> respond -> persist
-```
-
-The current slice includes the supervisor, Frame Analyst, and deterministic
-drift preservation. The `mythinking serve` HTTP API exposes both a
-non-streaming `POST /turns` (M7a) and a Server-Sent Events `POST /turns/stream`
-(M7b) over the same runtime, and `frontend/` (M7c) is a thin Next.js workspace
-UI over that same API — M7 is now complete end to end.
+The chat thread persists in `data/checkpoints.sqlite` (per `project_id`), the
+board in `data/state.sqlite`, and fetched/ingested documents in
+`data/store.sqlite`. `mythinking serve` exposes non-streaming `POST /turns`
+(M7a) and SSE `POST /turns/stream` (M7b) over the same runtime; `frontend/`
+(M7c) is a Next.js workspace UI over that API.
 
 ## Codex session rule
 
