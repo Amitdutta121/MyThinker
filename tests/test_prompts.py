@@ -15,6 +15,8 @@ def test_prompt_registry_loads_research_metadata() -> None:
     assert "frame_analyst:v1" in prompts
     assert "drift_judge:v1" in prompts
     assert "evidence_analyst:v1" in prompts
+    assert "profile_extractor:v1" in prompts
+    assert "intent_classifier:v1" in prompts
     assert all(prompt.evidence for prompt in prompts.values())
     assert all(prompt.eval_datasets for prompt in prompts.values())
 
@@ -22,7 +24,13 @@ def test_prompt_registry_loads_research_metadata() -> None:
 def test_latest_prompt_version_is_selected() -> None:
     prompt = PromptRegistry(PROMPT_DIR).get("lead_partner")
 
-    assert prompt.version == 7
+    assert prompt.version == 9
+
+
+def test_latest_researcher_prompt_version_is_selected() -> None:
+    prompt = PromptRegistry(PROMPT_DIR).get("researcher")
+
+    assert prompt.version == 4
 
 
 def test_prompt_render_requires_all_variables() -> None:
@@ -31,17 +39,13 @@ def test_prompt_render_requires_all_variables() -> None:
     with pytest.raises(ValueError, match="user_message"):
         prompt.render(
             {
-                "project_state": "{}",
+                "project_context": "mode: capture",
                 "frame_analysis": "null",
                 "drift_assessment": "null",
                 "branch_command": "null",
-                "evidence_ledger": "No evidence captured yet.",
-                "branch_alternatives": "No alternatives captured yet.",
                 "exploration_analysis": "null",
                 "synthesis": "null",
-                "open_research_tasks": "No open research tasks.",
                 "research_analysis": "null",
-                "next_actions_plan": "No next actions captured yet.",
                 "planner_analysis": "null",
             }
         )

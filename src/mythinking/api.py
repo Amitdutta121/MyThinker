@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from mythinking.documents import Document
+from mythinking.retrieval import list_documents
 from mythinking.runtime import ThinkingRuntime, create_runtime
 from mythinking.state import (
     AssistantTurn,
@@ -118,6 +120,15 @@ def create_app(runtime: ThinkingRuntime | None = None) -> FastAPI:
         if state is None:
             raise HTTPException(status_code=404, detail=f"Unknown project_id: {project_id}")
         return state
+
+    @app.get("/projects/{project_id}/documents", response_model=list[Document])
+    def list_project_documents(
+        project_id: str,
+        runtime: ThinkingRuntime = Depends(get_runtime),
+    ) -> list[Document]:
+        if runtime.store is None:
+            return []
+        return list_documents(runtime.store, project_id)
 
     return app
 

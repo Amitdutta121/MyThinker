@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
+from mythinking.agents.profile_extractor import ProfileExtractor
 from mythinking.branching import BranchSwitcher
 from mythinking.config import Settings
 from mythinking.evidence import EvidenceLedger
@@ -22,16 +23,21 @@ from mythinking.state import (
     ExplorerAnalysis,
     FrameAnalysis,
     IdeaBranch,
+    IntentClassification,
     NextActionDraft,
     NorthStarUpdate,
     PlannerAnalysis,
+    ProfileAnalysis,
     ProjectState,
     ResearcherAnalysis,
     ResearchTask,
     ResearchTaskStatus,
     SynthesizerAnalysis,
     ThinkingMode,
+    TurnIntent,
     TurnStreamEventType,
+    UserProfile,
+    UserProfileUpdate,
 )
 
 
@@ -66,6 +72,19 @@ class StubDriftJudge:
             reason="stub judge default",
             signals=[DriftSignal.MODEL_FALLBACK],
         )
+
+
+class StubIntentClassifier:
+    """Deterministic stand-in classifying turns from a fixed sequence, repeating the last value."""
+
+    def __init__(self, intents: list[TurnIntent] | None = None) -> None:
+        self.intents = intents or [TurnIntent.NONE]
+        self.calls: list[str] = []
+
+    def classify(self, user_message: str) -> IntentClassification:
+        self.calls.append(user_message)
+        index = min(len(self.calls) - 1, len(self.intents) - 1)
+        return IntentClassification(intent=self.intents[index])
 
 
 class SequenceFrameAnalyst:
@@ -131,6 +150,18 @@ class StubPlanner:
         return self.analysis
 
 
+class StubProfileExtractor:
+    """Deterministic stand-in that proposes no profile update unless configured to."""
+
+    def __init__(self, analysis: ProfileAnalysis | None = None) -> None:
+        self.analysis = analysis or ProfileAnalysis()
+        self.calls: list[tuple[str, str]] = []
+
+    def analyze(self, user_profile: UserProfile, user_message: str) -> ProfileAnalysis:
+        self.calls.append((user_profile.role, user_message))
+        return self.analysis
+
+
 class RecordingSupervisor:
     def __init__(self) -> None:
         self.calls: list[
@@ -188,6 +219,7 @@ def _build_runtime(
     *,
     frame_analyst: SequenceFrameAnalyst,
     supervisor: RecordingSupervisor,
+    intent_classifier: StubIntentClassifier | None = None,
     drift_judge: StubDriftJudge | None = None,
     branch_switcher: BranchSwitcher | None = None,
     evidence_analyst: StubEvidenceAnalyst | None = None,
@@ -196,16 +228,20 @@ def _build_runtime(
     synthesizer: StubSynthesizer | None = None,
     researcher: StubResearcher | None = None,
     planner: StubPlanner | None = None,
+    profile_extractor: StubProfileExtractor | None = None,
+    enable_profile_extraction: bool = False,
 ) -> ThinkingRuntime:
     settings = Settings(
         _env_file=None,
         data_dir=tmp_path / "data",
         prompt_dir=tmp_path / "prompts",
+        enable_profile_extraction=enable_profile_extraction,
     )
     return ThinkingRuntime(
         settings=settings,
         frame_analyst=frame_analyst,
         supervisor=supervisor,
+        intent_classifier=intent_classifier or StubIntentClassifier(),
         drift_judge=drift_judge or StubDriftJudge(),
         branch_switcher=branch_switcher or BranchSwitcher(),
         evidence_analyst=evidence_analyst or StubEvidenceAnalyst(),
@@ -214,6 +250,7 @@ def _build_runtime(
         synthesizer=synthesizer or StubSynthesizer(),
         researcher=researcher or StubResearcher(),
         planner=planner or StubPlanner(),
+        profile_extractor=profile_extractor,
     )
 
 
@@ -528,6 +565,7 @@ def test_run_turn_generates_alternatives_on_explicit_explore_request(tmp_path: P
         tmp_path,
         frame_analyst=frame_analyst,
         supervisor=supervisor,
+        intent_classifier=StubIntentClassifier([TurnIntent.NONE, TurnIntent.EXPLORE]),
         explorer=explorer,
     )
     seed_turn = runtime.run_turn(
@@ -570,6 +608,7 @@ def test_run_turn_converges_alternatives_on_explicit_converge_request(tmp_path: 
         tmp_path,
         frame_analyst=frame_analyst,
         supervisor=supervisor,
+        intent_classifier=StubIntentClassifier([TurnIntent.NONE, TurnIntent.CONVERGE]),
         synthesizer=synthesizer,
     )
     seed_turn = runtime.run_turn(
@@ -629,6 +668,7 @@ def test_run_turn_answers_scoped_research_request_and_resolves_task(tmp_path: Pa
         tmp_path,
         frame_analyst=frame_analyst,
         supervisor=supervisor,
+        intent_classifier=StubIntentClassifier([TurnIntent.NONE, TurnIntent.RESEARCH]),
         researcher=researcher,
     )
     seed_turn = runtime.run_turn(
@@ -679,6 +719,7 @@ def test_run_turn_plans_a_next_action_on_explicit_planning_request(tmp_path: Pat
         tmp_path,
         frame_analyst=frame_analyst,
         supervisor=supervisor,
+        intent_classifier=StubIntentClassifier([TurnIntent.NONE, TurnIntent.PLAN]),
         planner=planner,
     )
     seed_turn = runtime.run_turn(
@@ -698,6 +739,65 @@ def test_run_turn_plans_a_next_action_on_explicit_planning_request(tmp_path: Pat
     assert [action.description for action in saved.next_actions] == [
         "Draft the first newsletter issue"
     ]
+
+
+def test_run_turn_extracts_and_persists_profile_when_an_extractor_is_wired(
+    tmp_path: Path,
+) -> None:
+    frame_analyst = SequenceFrameAnalyst(
+        [
+            FrameAnalysis(
+                north_star=NorthStarUpdate(
+                    problem_statement="Product idea notes keep drifting",
+                    desired_outcome="Keep the main thread focused",
+                    beneficiary="Solo founder",
+                )
+            ),
+        ]
+    )
+    supervisor = RecordingSupervisor()
+    profile_extractor = StubProfileExtractor(
+        ProfileAnalysis(profile_update=UserProfileUpdate(role="Backend engineer"))
+    )
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=frame_analyst,
+        supervisor=supervisor,
+        profile_extractor=profile_extractor,
+    )
+
+    runtime.run_turn("I'm a backend engineer thinking through this idea.")
+
+    assert profile_extractor.calls
+    assert runtime.get_user_profile().role == "Backend engineer"
+
+
+def test_profile_extraction_is_off_by_default(tmp_path: Path) -> None:
+    runtime = _build_runtime(
+        tmp_path,
+        frame_analyst=SequenceFrameAnalyst([FrameAnalysis()]),
+        supervisor=RecordingSupervisor(),
+    )
+
+    assert runtime.profile_extractor is None
+
+
+def test_enabling_profile_extraction_auto_constructs_an_extractor(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        prompt_dir=tmp_path / "prompts",
+        enable_profile_extraction=True,
+        openrouter_api_key=SecretStr("test-key"),
+    )
+
+    runtime = ThinkingRuntime(
+        settings=settings,
+        frame_analyst=SequenceFrameAnalyst([FrameAnalysis()]),
+        supervisor=RecordingSupervisor(),
+    )
+
+    assert isinstance(runtime.profile_extractor, ProfileExtractor)
 
 
 def test_get_project_state_returns_none_for_unknown_project(tmp_path: Path) -> None:

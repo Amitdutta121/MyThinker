@@ -1,4 +1,8 @@
-from mythinking.research import ResearchImporter, ResearchRouter, format_open_research_tasks
+from mythinking.research import (
+    ResearchImporter,
+    best_matching_open_task,
+    format_open_research_tasks,
+)
 from mythinking.state import (
     EvidenceDraft,
     EvidenceKind,
@@ -6,7 +10,6 @@ from mythinking.state import (
     ResearcherAnalysis,
     ResearchTask,
     ResearchTaskStatus,
-    ResearchTrigger,
 )
 
 
@@ -14,41 +17,22 @@ def _anchored_project_state() -> ProjectState:
     return ProjectState()
 
 
-def test_router_detects_no_intent_for_an_ordinary_message() -> None:
-    router = ResearchRouter()
-
-    intent = router.detect(_anchored_project_state(), "What should the first experiment be?")
-
-    assert intent.trigger is ResearchTrigger.NONE
-
-
-def test_router_detects_explicit_research_request() -> None:
-    router = ResearchRouter()
-
-    intent = router.detect(_anchored_project_state(), "Can you research this before we decide?")
-
-    assert intent.trigger is ResearchTrigger.EXPLICIT_REQUEST
-    assert intent.research_task_id == ""
-
-
-def test_router_links_explicit_request_to_best_matching_open_task() -> None:
-    router = ResearchRouter()
+def test_best_matching_open_task_finds_highest_token_overlap() -> None:
     project_state = _anchored_project_state()
     project_state.research_tasks = [
         ResearchTask(question="Does remote work reduce team collaboration?"),
         ResearchTask(question="What pricing model do competitors use?"),
     ]
 
-    intent = router.detect(
+    task = best_matching_open_task(
         project_state, "Please research whether remote work reduces collaboration."
     )
 
-    assert intent.trigger is ResearchTrigger.EXPLICIT_REQUEST
-    assert intent.research_task_id == project_state.research_tasks[0].id
+    assert task is not None
+    assert task.id == project_state.research_tasks[0].id
 
 
-def test_router_ignores_answered_tasks_when_matching() -> None:
-    router = ResearchRouter()
+def test_best_matching_open_task_ignores_answered_tasks() -> None:
     project_state = _anchored_project_state()
     project_state.research_tasks = [
         ResearchTask(
@@ -57,12 +41,11 @@ def test_router_ignores_answered_tasks_when_matching() -> None:
         )
     ]
 
-    intent = router.detect(
+    task = best_matching_open_task(
         project_state, "Please research whether remote work reduces collaboration."
     )
 
-    assert intent.trigger is ResearchTrigger.EXPLICIT_REQUEST
-    assert intent.research_task_id == ""
+    assert task is None
 
 
 def test_importer_appends_new_evidence_and_dedupes_by_normalized_claim() -> None:

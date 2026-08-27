@@ -4,21 +4,26 @@ from collections.abc import Iterable
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.store.sqlite import SqliteStore
 
 from mythinking.agents.evidence_analyst import EvidenceAnalyst
 from mythinking.agents.explorer import Explorer
 from mythinking.agents.frame_analyst import FrameAnalyst
+from mythinking.agents.intent_classifier import IntentClassifier
 from mythinking.agents.planner import Planner
+from mythinking.agents.profile_extractor import ProfileExtractor
 from mythinking.agents.researcher import Researcher
 from mythinking.agents.supervisor import SupervisorAgent
 from mythinking.agents.synthesizer import Synthesizer
 from mythinking.branching import BranchManager, BranchSwitcher
 from mythinking.drift import DriftDetector, DriftJudge, DriftResolver
 from mythinking.evidence import EvidenceLedger
-from mythinking.exploration import ConvergenceService, ExplorationManager, ExplorationRouter
-from mythinking.persistence import StateRepository
-from mythinking.planning import PlannerRouter, PlanningService
-from mythinking.research import ResearchImporter, ResearchRouter
+from mythinking.exploration import ConvergenceService, ExplorationManager
+from mythinking.persistence import ProfileRepository, StateRepository
+from mythinking.planning import PlanningService
+from mythinking.profile import ProfileService
+from mythinking.research import ResearchImporter, best_matching_open_task
+from mythinking.retrieval import index_content
 from mythinking.state import (
     Assumption,
     BranchCommandAction,
@@ -35,6 +40,7 @@ from mythinking.state import (
     ResearchTrigger,
     SessionGraphState,
     ThinkingMode,
+    TurnIntent,
 )
 
 
@@ -42,6 +48,7 @@ def build_thinking_graph(
     frame_analyst: FrameAnalyst,
     supervisor: SupervisorAgent,
     repository: StateRepository,
+    intent_classifier: IntentClassifier,
     *,
     drift_detector: DriftDetector | None = None,
     drift_judge: DriftJudge | None = None,
@@ -51,42 +58,43 @@ def build_thinking_graph(
     evidence_ledger: EvidenceLedger | None = None,
     explorer: Explorer | None = None,
     synthesizer: Synthesizer | None = None,
-    exploration_router: ExplorationRouter | None = None,
     exploration_manager: ExplorationManager | None = None,
     convergence_service: ConvergenceService | None = None,
     researcher: Researcher | None = None,
-    research_router: ResearchRouter | None = None,
     research_importer: ResearchImporter | None = None,
     planner: Planner | None = None,
-    planner_router: PlannerRouter | None = None,
     planning_service: PlanningService | None = None,
+    profile_extractor: ProfileExtractor | None = None,
+    profile_repository: ProfileRepository | None = None,
+    profile_service: ProfileService | None = None,
     checkpointer: Any = None,
+    store: SqliteStore | None = None,
 ):
     workflow = StateGraph(SessionGraphState)
     drift_resolver = DriftResolver(drift_detector or DriftDetector(), drift_judge)
     branch_manager = branch_manager or BranchManager()
     branch_switcher = branch_switcher or BranchSwitcher()
     evidence_ledger = evidence_ledger or EvidenceLedger()
-    exploration_router = exploration_router or ExplorationRouter()
     exploration_manager = exploration_manager or ExplorationManager()
     convergence_service = convergence_service or ConvergenceService()
-    research_router = research_router or ResearchRouter()
     research_importer = research_importer or ResearchImporter()
-    planner_router = planner_router or PlannerRouter()
     planning_service = planning_service or PlanningService()
+    profile_service = profile_service or ProfileService()
 
     workflow.add_node("capture", capture_node)
     workflow.add_node("handle_branch_command", _branch_command_node(branch_switcher))
-    workflow.add_node("route_exploration", _route_exploration_node(exploration_router))
+    workflow.add_node("classify_intent", _classify_intent_node(intent_classifier))
     workflow.add_node("explore", _explore_node(explorer, exploration_manager))
     workflow.add_node("converge", _converge_node(synthesizer, convergence_service))
-    workflow.add_node("route_research", _route_research_node(research_router))
-    workflow.add_node("research", _research_node(researcher, research_importer))
-    workflow.add_node("route_planning", _route_planning_node(planner_router))
+    workflow.add_node("research", _research_node(researcher, research_importer, store))
     workflow.add_node("plan", _plan_node(planner, planning_service))
     workflow.add_node("frame", _frame_node(frame_analyst))
     workflow.add_node("detect_drift", _drift_node(drift_resolver, branch_manager))
-    workflow.add_node("extract_evidence", _evidence_node(evidence_analyst, evidence_ledger))
+    workflow.add_node("extract_evidence", _evidence_node(evidence_analyst, evidence_ledger, store))
+    workflow.add_node(
+        "extract_profile",
+        _profile_node(profile_extractor, profile_service, profile_repository),
+    )
     workflow.add_node("choose_mode", choose_mode_node)
     workflow.add_node("respond", _respond_node(supervisor))
     workflow.add_node("persist", _persist_node(repository))
@@ -96,30 +104,27 @@ def build_thinking_graph(
     workflow.add_conditional_edges(
         "handle_branch_command",
         _route_after_branch_command,
-        {"continue": "route_exploration", "handled": "choose_mode"},
+        {"continue": "classify_intent", "handled": "choose_mode"},
     )
     workflow.add_conditional_edges(
-        "route_exploration",
-        _route_after_exploration_intent,
-        {"explore": "explore", "converge": "converge", "none": "route_research"},
+        "classify_intent",
+        _route_after_intent_classification,
+        {
+            "explore": "explore",
+            "converge": "converge",
+            "research": "research",
+            "plan": "plan",
+            "none": "frame",
+        },
     )
     workflow.add_edge("explore", "choose_mode")
     workflow.add_edge("converge", "choose_mode")
-    workflow.add_conditional_edges(
-        "route_research",
-        _route_after_research_intent,
-        {"research": "research", "none": "route_planning"},
-    )
     workflow.add_edge("research", "choose_mode")
-    workflow.add_conditional_edges(
-        "route_planning",
-        _route_after_plan_intent,
-        {"plan": "plan", "none": "frame"},
-    )
     workflow.add_edge("plan", "choose_mode")
     workflow.add_edge("frame", "detect_drift")
     workflow.add_edge("detect_drift", "extract_evidence")
-    workflow.add_edge("extract_evidence", "choose_mode")
+    workflow.add_edge("extract_evidence", "extract_profile")
+    workflow.add_edge("extract_profile", "choose_mode")
     workflow.add_edge("choose_mode", "respond")
     workflow.add_edge("respond", "persist")
     workflow.add_edge("persist", END)
@@ -175,22 +180,55 @@ def _respond_node(supervisor: SupervisorAgent):
     return run
 
 
-def _route_exploration_node(exploration_router: ExplorationRouter):
-    def run(state: SessionGraphState) -> dict[str, ExplorationIntent]:
-        intent = exploration_router.detect(state.project_state, state.user_message)
-        return {"exploration_intent": intent}
+def _classify_intent_node(intent_classifier: IntentClassifier):
+    def run(state: SessionGraphState) -> dict[str, Any]:
+        classification = intent_classifier.classify(state.user_message)
+        exploration_intent = ExplorationIntent()
+        research_intent = ResearchIntent()
+        plan_intent = PlanIntent()
+
+        if classification.intent is TurnIntent.EXPLORE:
+            exploration_intent = ExplorationIntent(
+                action=IntentAction.EXPLORE, matched_text=state.user_message
+            )
+        elif classification.intent is TurnIntent.CONVERGE:
+            exploration_intent = ExplorationIntent(
+                action=IntentAction.CONVERGE, matched_text=state.user_message
+            )
+        elif classification.intent is TurnIntent.RESEARCH:
+            task = best_matching_open_task(state.project_state, state.user_message)
+            research_intent = ResearchIntent(
+                trigger=ResearchTrigger.EXPLICIT_REQUEST,
+                research_task_id=task.id if task else "",
+                matched_text=state.user_message,
+            )
+        elif classification.intent is TurnIntent.PLAN:
+            plan_intent = PlanIntent(
+                trigger=PlanTrigger.EXPLICIT_REQUEST, matched_text=state.user_message
+            )
+
+        return {
+            "intent_classification": classification,
+            "exploration_intent": exploration_intent,
+            "research_intent": research_intent,
+            "plan_intent": plan_intent,
+        }
 
     return run
 
 
-def _route_after_exploration_intent(state: SessionGraphState) -> str:
-    intent = state.exploration_intent
-    if intent is None:
+def _route_after_intent_classification(state: SessionGraphState) -> str:
+    classification = state.intent_classification
+    if classification is None:
         return "none"
-    if intent.action is IntentAction.EXPLORE:
+    if classification.intent is TurnIntent.EXPLORE:
         return "explore"
-    if intent.action is IntentAction.CONVERGE:
+    if classification.intent is TurnIntent.CONVERGE:
         return "converge"
+    if classification.intent is TurnIntent.RESEARCH:
+        return "research"
+    if classification.intent is TurnIntent.PLAN:
+        return "plan"
     return "none"
 
 
@@ -216,30 +254,22 @@ def _converge_node(synthesizer: Synthesizer | None, convergence_service: Converg
     return run
 
 
-def _route_research_node(research_router: ResearchRouter):
-    def run(state: SessionGraphState) -> dict[str, ResearchIntent]:
-        intent = research_router.detect(state.project_state, state.user_message)
-        return {"research_intent": intent}
-
-    return run
-
-
-def _route_after_research_intent(state: SessionGraphState) -> str:
-    intent = state.research_intent
-    if intent is not None and intent.trigger is ResearchTrigger.EXPLICIT_REQUEST:
-        return "research"
-    return "none"
-
-
-def _research_node(researcher: Researcher | None, research_importer: ResearchImporter):
+def _research_node(
+    researcher: Researcher | None,
+    research_importer: ResearchImporter,
+    store: SqliteStore | None,
+):
     def run(state: SessionGraphState) -> dict[str, Any]:
         if researcher is None:
             return {}
         intent = state.research_intent
         research_task_id = intent.research_task_id if intent else ""
         task = _find_research_task(state.project_state, research_task_id)
+        before_evidence_ids = {item.id for item in state.project_state.evidence}
         analysis = researcher.analyze(state.project_state, state.user_message, task)
         project_state = research_importer.merge(state.project_state, research_task_id, analysis)
+        if store is not None:
+            _index_new_evidence(store, project_state, before_evidence_ids)
         return {"research_analysis": analysis, "project_state": project_state}
 
     return run
@@ -252,21 +282,6 @@ def _find_research_task(project_state: ProjectState, research_task_id: str) -> R
         (task for task in project_state.research_tasks if task.id == research_task_id),
         None,
     )
-
-
-def _route_planning_node(planner_router: PlannerRouter):
-    def run(state: SessionGraphState) -> dict[str, PlanIntent]:
-        intent = planner_router.detect(state.project_state, state.user_message)
-        return {"plan_intent": intent}
-
-    return run
-
-
-def _route_after_plan_intent(state: SessionGraphState) -> str:
-    intent = state.plan_intent
-    if intent is not None and intent.trigger is PlanTrigger.EXPLICIT_REQUEST:
-        return "plan"
-    return "none"
 
 
 def _plan_node(planner: Planner | None, planning_service: PlanningService):
@@ -291,13 +306,72 @@ def _branch_command_node(branch_switcher: BranchSwitcher):
     return run
 
 
-def _evidence_node(evidence_analyst: EvidenceAnalyst | None, evidence_ledger: EvidenceLedger):
+def _evidence_node(
+    evidence_analyst: EvidenceAnalyst | None,
+    evidence_ledger: EvidenceLedger,
+    store: SqliteStore | None,
+):
     def run(state: SessionGraphState) -> dict[str, Any]:
         if evidence_analyst is None:
             return {}
         analysis = evidence_analyst.analyze(state.project_state, state.user_message)
+        before_evidence_ids = {item.id for item in state.project_state.evidence}
+        before_task_ids = {task.id for task in state.project_state.research_tasks}
         project_state = evidence_ledger.merge(state.project_state, analysis)
+        if store is not None:
+            _index_new_evidence(store, project_state, before_evidence_ids)
+            _index_new_research_tasks(store, project_state, before_task_ids)
         return {"evidence_analysis": analysis, "project_state": project_state}
+
+    return run
+
+
+def _index_new_evidence(
+    store: SqliteStore, project_state: ProjectState, before_ids: set[str]
+) -> None:
+    for item in project_state.evidence:
+        if item.id in before_ids:
+            continue
+        index_content(
+            store,
+            project_state.project_id,
+            "evidence",
+            item.id,
+            item.claim,
+            kind=item.kind.value,
+            source_url=item.source_url,
+            source_title=item.source_title,
+        )
+
+
+def _index_new_research_tasks(
+    store: SqliteStore, project_state: ProjectState, before_ids: set[str]
+) -> None:
+    for task in project_state.research_tasks:
+        if task.id in before_ids:
+            continue
+        index_content(
+            store,
+            project_state.project_id,
+            "research_task",
+            task.id,
+            task.question,
+            notes=task.notes,
+        )
+
+
+def _profile_node(
+    profile_extractor: ProfileExtractor | None,
+    profile_service: ProfileService,
+    profile_repository: ProfileRepository | None,
+):
+    def run(state: SessionGraphState) -> dict[str, Any]:
+        if profile_extractor is None or profile_repository is None:
+            return {}
+        profile = profile_repository.load()
+        analysis = profile_extractor.analyze(profile, state.user_message)
+        profile_repository.save(profile_service.merge(profile, analysis))
+        return {"profile_analysis": analysis}
 
     return run
 

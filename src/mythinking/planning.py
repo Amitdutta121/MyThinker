@@ -1,43 +1,6 @@
-"""Deterministic next-action planning routing plus a merge/formatting service."""
+"""Next-action planning merge/formatting service."""
 
-from mythinking.state import NextAction, PlanIntent, PlannerAnalysis, PlanTrigger, ProjectState
-
-_EXPLICIT_TRIGGERS = (
-    "what should i do next",
-    "what should we do next",
-    "what's my next step",
-    "whats my next step",
-    "what is my next step",
-    "what's the next step",
-    "whats the next step",
-    "what is the next step",
-    "what's the next action",
-    "whats the next action",
-    "what is the next action",
-    "plan my next step",
-    "plan the next step",
-    "plan next steps",
-    "plan the next action",
-    "help me plan next steps",
-    "help me plan the next step",
-    "let's plan next steps",
-    "lets plan next steps",
-    "give me a next action",
-    "give me the next action",
-    "what should the first experiment be",
-    "help me plan an experiment",
-    "plan the next experiment",
-)
-
-
-class PlannerRouter:
-    """Classify a turn as an explicit request to plan the next action, or neither."""
-
-    def detect(self, project_state: ProjectState, user_message: str) -> PlanIntent:
-        lowered = _normalize(user_message)
-        if not any(phrase in lowered for phrase in _EXPLICIT_TRIGGERS):
-            return PlanIntent()
-        return PlanIntent(trigger=PlanTrigger.EXPLICIT_REQUEST, matched_text=user_message.strip())
+from mythinking.state import NextAction, PlannerAnalysis, ProjectState
 
 
 class PlanningService:

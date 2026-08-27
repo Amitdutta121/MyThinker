@@ -1,6 +1,11 @@
 from pathlib import Path
+from typing import Any
+
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage
 
 from mythinking.agents.supervisor import SupervisorAgent
+from mythinking.context import ContextRetriever
 from mythinking.prompts import PromptRegistry
 from mythinking.state import (
     BranchCommand,
@@ -12,13 +17,10 @@ from mythinking.state import (
     EvidenceItem,
     EvidenceKind,
     IdeaBranch,
-    NextAction,
     NextActionDraft,
     PlannerAnalysis,
     ProjectState,
     ResearcherAnalysis,
-    ResearchTask,
-    ResearchTaskStatus,
     SynthesizerAnalysis,
     TangentDisposition,
     ThinkingMode,
@@ -27,27 +29,51 @@ from mythinking.state import (
 PROMPT_DIR = Path(__file__).parents[1] / "prompts"
 
 
-class FakeStructuredModel:
-    def __init__(self, payload: dict[str, str]) -> None:
-        self.payload = payload
-        self.rendered_prompt = ""
+class FakeToolCallingModel(FakeMessagesListChatModel):
+    """A scripted chat model create_agent can drive: cycles through `responses`,
+    and accepts `bind_tools` as a no-op so it can be handed to `create_agent`."""
 
-    def invoke(self, rendered_prompt: str) -> dict[str, str]:
-        self.rendered_prompt = rendered_prompt
-        return self.payload
+    def bind_tools(self, tools: Any, **kwargs: Any) -> "FakeToolCallingModel":
+        return self
 
 
-class FakeModel:
-    def __init__(self, payload: dict[str, str]) -> None:
-        self.structured_model = FakeStructuredModel(payload)
+class _FakeStore:
+    """Below-threshold ContextRetriever never calls .search(), so this never
+    needs to behave like a real SqliteStore for these tests."""
 
-    def with_structured_output(self, schema: object) -> FakeStructuredModel:
-        return self.structured_model
+    def search(
+        self,
+        namespace: Any,
+        *,
+        query: Any = None,
+        filter: Any = None,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> list:
+        raise AssertionError("should not query the store below the configured threshold")
+
+
+def _reply_response(message: str, question: str = "", call_id: str = "reply") -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "SupervisorReply",
+                "args": {"message": message, "question": question},
+                "id": call_id,
+            }
+        ],
+    )
+
+
+def _agent(model: FakeToolCallingModel) -> SupervisorAgent:
+    context_retriever = ContextRetriever(_FakeStore(), threshold=1000, top_k=3)
+    return SupervisorAgent(PromptRegistry(PROMPT_DIR), model, context_retriever)
 
 
 def test_supervisor_adds_default_drift_question_when_model_omits_one() -> None:
-    model = FakeModel({"message": "That looks like a side topic.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    model = FakeToolCallingModel(responses=[_reply_response("That looks like a side topic.")])
+    agent = _agent(model)
     project_state = ProjectState(current_mode=ThinkingMode.CHALLENGE)
     drift_assessment = DriftAssessment(
         status=DriftStatus.DRIFTED,
@@ -65,12 +91,11 @@ def test_supervisor_adds_default_drift_question_when_model_omits_one() -> None:
         "Should we return to the main goal, or spin this tangent into its own branch?"
     )
     assert reply.question in reply.message
-    assert "vector databases" in model.structured_model.rendered_prompt.lower()
 
 
 def test_supervisor_adds_branch_switch_confirmation_when_model_omits_one() -> None:
-    model = FakeModel({"message": "Good move.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    model = FakeToolCallingModel(responses=[_reply_response("Good move.")])
+    agent = _agent(model)
     project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
     branch_command = BranchCommand(
         action=BranchCommandAction.SWITCH,
@@ -86,12 +111,11 @@ def test_supervisor_adds_branch_switch_confirmation_when_model_omits_one() -> No
     )
 
     assert 'Switched the active thread to "Newsletter Idea".' in reply.message
-    assert "newsletter idea" in model.structured_model.rendered_prompt.lower()
 
 
 def test_supervisor_adds_return_to_main_confirmation_when_model_omits_one() -> None:
-    model = FakeModel({"message": "Refocusing.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    model = FakeToolCallingModel(responses=[_reply_response("Refocusing.")])
+    agent = _agent(model)
     project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
     branch_command = BranchCommand(action=BranchCommandAction.RETURN_TO_MAIN)
 
@@ -104,46 +128,9 @@ def test_supervisor_adds_return_to_main_confirmation_when_model_omits_one() -> N
     assert "Switched the active thread back to the main goal." in reply.message
 
 
-def test_supervisor_renders_the_evidence_ledger_into_the_prompt() -> None:
-    model = FakeModel({"message": "Noted.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
-    project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
-    project_state.evidence = [
-        EvidenceItem(
-            claim="Remote work always reduces innovation",
-            kind=EvidenceKind.HYPOTHESIS,
-        )
-    ]
-
-    agent.respond(project_state, "What should we test next?")
-
-    rendered = model.structured_model.rendered_prompt.lower()
-    assert "hypotheses (unverified)" in rendered
-    assert "remote work always reduces innovation" in rendered
-
-
-def test_supervisor_renders_branch_alternatives_into_the_prompt() -> None:
-    model = FakeModel({"message": "Here are the options.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
-    project_state = ProjectState(current_mode=ThinkingMode.EXPLORE)
-    project_state.branches = [
-        IdeaBranch(
-            name="Newsletter Idea",
-            summary="Start a newsletter for solo founders",
-            status=BranchStatus.ACTIVE,
-        )
-    ]
-
-    agent.respond(project_state, "Give me some alternatives.")
-
-    rendered = model.structured_model.rendered_prompt.lower()
-    assert "newsletter idea" in rendered
-    assert "start a newsletter for solo founders" in rendered
-
-
 def test_supervisor_adds_default_converge_question_when_model_omits_one() -> None:
-    model = FakeModel({"message": "Here is the tradeoff comparison.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    model = FakeToolCallingModel(responses=[_reply_response("Here is the tradeoff comparison.")])
+    agent = _agent(model)
     project_state = ProjectState(current_mode=ThinkingMode.CONVERGE)
     synthesis = SynthesizerAnalysis(
         options_considered=[ConvergenceOption(branch_name="Newsletter Idea")],
@@ -162,23 +149,9 @@ def test_supervisor_adds_default_converge_question_when_model_omits_one() -> Non
     assert reply.question in reply.message
 
 
-def test_supervisor_renders_open_research_tasks_into_the_prompt() -> None:
-    model = FakeModel({"message": "Noted.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
-    project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
-    project_state.research_tasks = [
-        ResearchTask(question="Do we ship weekly?", status=ResearchTaskStatus.OPEN)
-    ]
-
-    agent.respond(project_state, "What should we focus on next?")
-
-    rendered = model.structured_model.rendered_prompt.lower()
-    assert "do we ship weekly?" in rendered
-
-
 def test_supervisor_adds_default_research_question_when_model_omits_one() -> None:
-    model = FakeModel({"message": "Here is what I found.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    model = FakeToolCallingModel(responses=[_reply_response("Here is what I found.")])
+    agent = _agent(model)
     project_state = ProjectState(current_mode=ThinkingMode.RESEARCH)
     research_analysis = ResearcherAnalysis(
         answer="We ship every Friday according to the changelog.",
@@ -195,23 +168,9 @@ def test_supervisor_adds_default_research_question_when_model_omits_one() -> Non
     assert reply.question in reply.message
 
 
-def test_supervisor_renders_the_next_actions_plan_into_the_prompt() -> None:
-    model = FakeModel({"message": "Noted.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
-    project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
-    project_state.next_actions = [
-        NextAction(description="Draft the first newsletter issue", time_box_minutes=30)
-    ]
-
-    agent.respond(project_state, "What have we already planned?")
-
-    rendered = model.structured_model.rendered_prompt.lower()
-    assert "draft the first newsletter issue" in rendered
-
-
 def test_supervisor_adds_default_decide_question_when_model_omits_one() -> None:
-    model = FakeModel({"message": "Here is a next step.", "question": ""})
-    agent = SupervisorAgent(PromptRegistry(PROMPT_DIR), model)
+    model = FakeToolCallingModel(responses=[_reply_response("Here is a next step.")])
+    agent = _agent(model)
     project_state = ProjectState(current_mode=ThinkingMode.DECIDE)
     planner_analysis = PlannerAnalysis(
         next_actions_to_add=[
@@ -227,3 +186,54 @@ def test_supervisor_adds_default_decide_question_when_model_omits_one() -> None:
 
     assert reply.question == "Does this next action work, or should we plan something else?"
     assert reply.question in reply.message
+
+
+def test_supervisor_can_call_a_context_tool_before_answering() -> None:
+    """Proves the tool-calling plumbing: a scripted call to a real,
+    project-state-bound tool resolves correctly (an unknown/mismatched tool
+    name here would raise), then the loop still reaches the final reply.
+    Tool *content* correctness is covered by test_tools.py directly."""
+
+    model = FakeToolCallingModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "get_evidence_ledger", "args": {"topic": "innovation"}, "id": "1"}
+                ],
+            ),
+            _reply_response("Here's what we've found so far."),
+        ]
+    )
+    agent = _agent(model)
+    project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
+    project_state.evidence = [
+        EvidenceItem(claim="Remote work always reduces innovation", kind=EvidenceKind.HYPOTHESIS)
+    ]
+
+    reply = agent.respond(project_state, "What should we test next?")
+
+    assert reply.message == "Here's what we've found so far."
+
+
+def test_supervisor_falls_back_to_a_message_when_the_loop_ends_without_a_reply() -> None:
+    """ModelCallLimitMiddleware can end the loop before a SupervisorReply
+    tool call is ever made -- the fallback message must still satisfy
+    SupervisorReply's min_length=1 contract rather than crash."""
+
+    model = FakeToolCallingModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "get_branch_alternatives", "args": {}, "id": str(i)}],
+            )
+            for i in range(10)
+        ]
+    )
+    agent = _agent(model)
+    project_state = ProjectState(current_mode=ThinkingMode.CAPTURE)
+    project_state.branches = [IdeaBranch(name="Newsletter Idea", status=BranchStatus.ACTIVE)]
+
+    reply = agent.respond(project_state, "Keep looking things up forever.")
+
+    assert reply.message

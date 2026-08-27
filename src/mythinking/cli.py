@@ -1,11 +1,14 @@
 """Small local commands for setup diagnostics and provider smoke testing."""
 
 import argparse
+import contextlib
+import sys
 from collections.abc import Sequence
 
 from mythinking.config import get_settings
 from mythinking.llm import create_chat_model
-from mythinking.persistence import StateRepository
+from mythinking.persistence import ProfileRepository, StateRepository
+from mythinking.profile import format_profile
 from mythinking.prompts import PromptRegistry
 from mythinking.runtime import ThinkingRuntime
 from mythinking.summary import format_project_summary
@@ -17,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("init", help="Initialize local application storage")
     subparsers.add_parser("status", help="Show non-secret runtime configuration")
     subparsers.add_parser("smoke-model", help="Make one small live OpenRouter request")
+    subparsers.add_parser("profile", help="Show the cross-project user profile (off by default)")
 
     list_parser = subparsers.add_parser("list", help="List recent thinking projects")
     list_parser.add_argument(
@@ -77,6 +81,16 @@ def run_status() -> int:
     print(f"Provider data collection: {settings.openrouter_data_collection}")
     print(f"Data directory: {settings.data_dir.resolve()}")
     print(f"Loaded prompt versions: {len(prompts)}")
+    print(f"Profile extraction enabled: {settings.enable_profile_extraction}")
+    return 0
+
+
+def run_profile() -> int:
+    settings = get_settings()
+    profile = ProfileRepository(settings.state_database_path).load()
+    if not settings.enable_profile_extraction:
+        print("Profile extraction is off (set MYTHINKING_ENABLE_PROFILE_EXTRACTION=true).")
+    print(format_profile(profile))
     return 0
 
 
@@ -140,12 +154,26 @@ def run_chat(message: str, project_id: str | None = None, resume_last: bool = Fa
     return 0
 
 
+def _use_utf8_streams() -> None:
+    # Windows consoles default to a legacy codepage that mangles the model's
+    # em dashes and curly quotes into "?". Force UTF-8 so responses render
+    # correctly; harmless where stdout/stderr are already UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        with contextlib.suppress(AttributeError, ValueError):
+            reconfigure(encoding="utf-8")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _use_utf8_streams()
     args = build_parser().parse_args(argv)
     commands = {
         "init": run_init,
         "status": run_status,
         "smoke-model": run_smoke_model,
+        "profile": run_profile,
         "serve": lambda: run_serve(args.host, args.port),
         "list": lambda: run_list(args.limit),
         "show": lambda: run_show(args.project_id),

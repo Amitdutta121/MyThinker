@@ -1,7 +1,7 @@
 from mythinking.exploration import (
     ConvergenceService,
     ExplorationManager,
-    ExplorationRouter,
+    format_all_branch_names,
     format_branch_alternatives,
 )
 from mythinking.state import (
@@ -10,7 +10,6 @@ from mythinking.state import (
     ConvergenceOption,
     ExplorerAnalysis,
     IdeaBranch,
-    IntentAction,
     NorthStar,
     ProjectState,
     SynthesizerAnalysis,
@@ -25,41 +24,6 @@ def _anchored_project_state() -> ProjectState:
             beneficiary="Solo founder",
         )
     )
-
-
-def test_router_detects_no_intent_for_an_ordinary_message() -> None:
-    router = ExplorationRouter()
-
-    intent = router.detect(_anchored_project_state(), "What should the first experiment be?")
-
-    assert intent.action is IntentAction.NONE
-
-
-def test_router_detects_explore_intent() -> None:
-    router = ExplorationRouter()
-
-    intent = router.detect(_anchored_project_state(), "Can you give me some alternatives?")
-
-    assert intent.action is IntentAction.EXPLORE
-
-
-def test_router_detects_converge_intent() -> None:
-    router = ExplorationRouter()
-
-    intent = router.detect(_anchored_project_state(), "Help me decide between these options.")
-
-    assert intent.action is IntentAction.CONVERGE
-
-
-def test_router_prefers_converge_when_both_phrasings_are_present() -> None:
-    router = ExplorationRouter()
-
-    intent = router.detect(
-        _anchored_project_state(),
-        "We explored options, now help me decide between them.",
-    )
-
-    assert intent.action is IntentAction.CONVERGE
 
 
 def test_exploration_manager_appends_new_alternatives_as_active_branches() -> None:
@@ -159,3 +123,22 @@ def test_format_branch_alternatives_excludes_merged_and_discarded_branches() -> 
     assert "Parked Idea" in rendered
     assert "Merged Idea" not in rendered
     assert "Discarded Idea" not in rendered
+
+
+def test_format_all_branch_names_reports_none_when_empty() -> None:
+    assert format_all_branch_names(_anchored_project_state()) == "No branches captured yet."
+
+
+def test_format_all_branch_names_includes_every_status() -> None:
+    project_state = _anchored_project_state()
+    project_state.branches = [
+        IdeaBranch(name="Active Idea", status=BranchStatus.ACTIVE),
+        IdeaBranch(name="Merged Idea", status=BranchStatus.MERGED),
+        IdeaBranch(name="Discarded Idea", status=BranchStatus.DISCARDED),
+    ]
+
+    rendered = format_all_branch_names(project_state)
+
+    assert "Active Idea" in rendered
+    assert "Merged Idea" in rendered
+    assert "Discarded Idea" in rendered

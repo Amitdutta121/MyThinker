@@ -1,26 +1,9 @@
-from mythinking.planning import PlannerRouter, PlanningService, format_next_actions
-from mythinking.state import NextAction, NextActionDraft, PlannerAnalysis, PlanTrigger, ProjectState
+from mythinking.planning import PlanningService, format_next_actions
+from mythinking.state import NextAction, NextActionDraft, PlannerAnalysis, ProjectState
 
 
 def _anchored_project_state() -> ProjectState:
     return ProjectState()
-
-
-def test_router_detects_no_intent_for_an_ordinary_message() -> None:
-    router = PlannerRouter()
-
-    intent = router.detect(_anchored_project_state(), "Here is more context on the idea.")
-
-    assert intent.trigger is PlanTrigger.NONE
-
-
-def test_router_detects_explicit_planning_request() -> None:
-    router = PlannerRouter()
-
-    intent = router.detect(_anchored_project_state(), "What should I do next?")
-
-    assert intent.trigger is PlanTrigger.EXPLICIT_REQUEST
-    assert intent.matched_text == "What should I do next?"
 
 
 def test_service_appends_new_next_action_and_dedupes_by_normalized_description() -> None:

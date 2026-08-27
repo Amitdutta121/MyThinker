@@ -1,66 +1,12 @@
-"""Deterministic explore/converge routing plus merge and formatting services."""
+"""Explore/converge merge and formatting services."""
 
 from mythinking.state import (
     BranchStatus,
-    ExplorationIntent,
     ExplorerAnalysis,
     IdeaBranch,
-    IntentAction,
     ProjectState,
     SynthesizerAnalysis,
 )
-
-_EXPLORE_TRIGGERS = (
-    "explore alternatives",
-    "explore options",
-    "explore some options",
-    "explore other options",
-    "give me alternatives",
-    "give me some alternatives",
-    "generate alternatives",
-    "generate some alternatives",
-    "brainstorm",
-    "what are some other ways",
-    "what other approaches",
-    "what other options",
-    "show me some options",
-    "show me options",
-    "other approaches",
-    "different approaches",
-)
-
-_CONVERGE_TRIGGERS = (
-    "help me decide",
-    "help me choose",
-    "help me pick",
-    "which one should i",
-    "which option should i",
-    "let's converge",
-    "lets converge",
-    "converge on",
-    "narrow this down",
-    "narrow it down",
-    "compare these options",
-    "compare the options",
-    "synthesize",
-    "make a decision",
-    "which option is best",
-    "recommend one",
-)
-
-
-class ExplorationRouter:
-    """Classify a turn as an explicit explore or converge request, or neither."""
-
-    def detect(self, project_state: ProjectState, user_message: str) -> ExplorationIntent:
-        lowered = _normalize(user_message)
-        if any(phrase in lowered for phrase in _CONVERGE_TRIGGERS):
-            return ExplorationIntent(
-                action=IntentAction.CONVERGE, matched_text=user_message.strip()
-            )
-        if any(phrase in lowered for phrase in _EXPLORE_TRIGGERS):
-            return ExplorationIntent(action=IntentAction.EXPLORE, matched_text=user_message.strip())
-        return ExplorationIntent()
 
 
 class ExplorationManager:
@@ -124,6 +70,19 @@ def format_branch_alternatives(project_state: ProjectState) -> str:
         status_label = "parked" if branch.status is BranchStatus.PARKED else "active"
         lines.append(f"{index}. {branch.name} ({status_label}): {detail}")
     return "\n".join(lines)
+
+
+def format_all_branch_names(project_state: ProjectState) -> str:
+    """Every branch name regardless of status, for exact-name matching against project_state.
+
+    Distinct from `format_branch_alternatives`, which excludes merged/discarded
+    branches -- some prompts (explorer, synthesizer) must avoid repeating *any*
+    existing branch name, not just the still-open ones.
+    """
+
+    if not project_state.branches:
+        return "No branches captured yet."
+    return "\n".join(f"{branch.name} ({branch.status.value})" for branch in project_state.branches)
 
 
 def _find_branch_by_name(project_state: ProjectState, name: str) -> IdeaBranch | None:

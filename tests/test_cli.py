@@ -5,8 +5,8 @@ import pytest
 
 from mythinking import cli
 from mythinking.config import Settings
-from mythinking.persistence import StateRepository
-from mythinking.state import AssistantTurn, NorthStar, ProjectState, ThinkingMode
+from mythinking.persistence import ProfileRepository, StateRepository
+from mythinking.state import AssistantTurn, NorthStar, ProjectState, ThinkingMode, UserProfile
 
 
 def test_build_parser_parses_chat_command() -> None:
@@ -220,6 +220,46 @@ def test_run_show_reports_unknown_project(monkeypatch, capsys, tmp_path: Path) -
 
     assert exit_code == 1
     assert "Unknown project_id" in output
+
+
+def test_build_parser_parses_profile_command() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["profile"])
+
+    assert args.command == "profile"
+
+
+def test_run_profile_reports_disabled_and_empty_by_default(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data", prompt_dir=tmp_path / "prompts")
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+
+    exit_code = cli.run_profile()
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "off" in output.lower()
+    assert "No user profile captured yet." in output
+
+
+def test_run_profile_prints_a_captured_profile(monkeypatch, capsys, tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        prompt_dir=tmp_path / "prompts",
+        enable_profile_extraction=True,
+    )
+    ProfileRepository(settings.state_database_path).save(UserProfile(role="Backend engineer"))
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+
+    exit_code = cli.run_profile()
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "off" not in output.lower()
+    assert "Role: Backend engineer" in output
 
 
 def test_main_routes_chat_command_to_run_chat(monkeypatch) -> None:

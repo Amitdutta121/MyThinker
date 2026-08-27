@@ -2,13 +2,12 @@
 
 from typing import Any
 
+from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware
 from pydantic import BaseModel, Field
 
-from mythinking.evidence import format_evidence_ledger
-from mythinking.exploration import format_branch_alternatives
-from mythinking.planning import format_next_actions
+from mythinking.context import ContextRetriever, format_project_context
 from mythinking.prompts import PromptRegistry
-from mythinking.research import format_open_research_tasks
 from mythinking.state import (
     AssistantTurn,
     BranchCommand,
@@ -24,6 +23,13 @@ from mythinking.state import (
     TangentDisposition,
     ThinkingMode,
 )
+from mythinking.tools import build_context_tools
+
+_MODEL_CALL_LIMIT = 4
+_FALLBACK_MESSAGE = (
+    "I need a bit more time to think this through -- could you ask again, "
+    "maybe narrowed down a little?"
+)
 
 
 class SupervisorReply(BaseModel):
@@ -34,18 +40,28 @@ class SupervisorReply(BaseModel):
 
 
 class SupervisorAgent:
-    """Generate the only user-facing assistant response for the turn."""
+    """Generate the only user-facing assistant response for the turn.
+
+    An agentic `create_agent` loop: the model can call read-only tools over
+    this project's own saved evidence/research-tasks/branches/next-actions
+    (`tools.build_context_tools`) when it judges a turn's question actually
+    needs them, rather than always being handed a fixed context bundle. No
+    internet-access tools are bound here -- those stay reachable only
+    through the Researcher's own explicit, separately-routed path.
+    """
 
     def __init__(
         self,
         prompt_registry: PromptRegistry,
         model: Any,
+        context_retriever: ContextRetriever,
         *,
         prompt_id: str = "lead_partner",
         prompt_version: int | None = None,
     ) -> None:
         self.prompt_registry = prompt_registry
         self.model = model
+        self.context_retriever = context_retriever
         self.prompt_id = prompt_id
         self.prompt_version = prompt_version
 
@@ -64,7 +80,7 @@ class SupervisorAgent:
         prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
         rendered = prompt.render(
             {
-                "project_state": project_state.model_dump_json(indent=2),
+                "project_context": format_project_context(project_state),
                 "user_message": user_message,
                 "frame_analysis": (
                     frame_analysis.model_dump_json(indent=2)
@@ -81,8 +97,6 @@ class SupervisorAgent:
                     if branch_command is not None
                     else "null"
                 ),
-                "evidence_ledger": format_evidence_ledger(project_state),
-                "branch_alternatives": format_branch_alternatives(project_state),
                 "exploration_analysis": (
                     exploration_analysis.model_dump_json(indent=2)
                     if exploration_analysis is not None
@@ -91,13 +105,11 @@ class SupervisorAgent:
                 "synthesis": (
                     synthesis.model_dump_json(indent=2) if synthesis is not None else "null"
                 ),
-                "open_research_tasks": format_open_research_tasks(project_state),
                 "research_analysis": (
                     research_analysis.model_dump_json(indent=2)
                     if research_analysis is not None
                     else "null"
                 ),
-                "next_actions_plan": format_next_actions(project_state),
                 "planner_analysis": (
                     planner_analysis.model_dump_json(indent=2)
                     if planner_analysis is not None
@@ -105,8 +117,21 @@ class SupervisorAgent:
                 ),
             }
         )
-        structured_model = self.model.with_structured_output(SupervisorReply)
-        reply = _validate_model_output(structured_model.invoke(rendered), SupervisorReply)
+
+        agent = create_agent(
+            self.model,
+            tools=build_context_tools(project_state, self.context_retriever),
+            system_prompt=rendered,
+            response_format=SupervisorReply,
+            middleware=[ModelCallLimitMiddleware(run_limit=_MODEL_CALL_LIMIT, exit_behavior="end")],
+        )
+        result = agent.invoke({"messages": [("user", user_message)]})
+        structured = result.get("structured_response")
+        if structured is None:
+            reply = SupervisorReply(message=_FALLBACK_MESSAGE)
+        else:
+            reply = _validate_model_output(structured, SupervisorReply)
+
         question = reply.question.strip()
         if (
             project_state.current_mode is ThinkingMode.CLARIFY

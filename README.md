@@ -56,6 +56,7 @@ uv run mythinking chat --project-id <existing-project-id> "Here is more context.
 uv run mythinking chat --last "Continue where I left off."
 uv run mythinking list
 uv run mythinking show <existing-project-id>
+uv run mythinking profile
 ```
 
 Run the HTTP API (a thin, non-streaming adapter over the same runtime):
@@ -87,6 +88,35 @@ The default model is OpenRouter's `~openai/gpt-latest` alias. Set
 `OPENROUTER_MODEL` to any supported `provider/model` slug when you want a fixed
 model. Model availability, capabilities, and pricing should be checked in the
 [OpenRouter model catalog](https://openrouter.ai/models).
+
+Cross-project user-profile extraction (role, expertise, working style -- never
+sensitive personal details) is off by default. Set
+`MYTHINKING_ENABLE_PROFILE_EXTRACTION=true` to turn it on, then inspect what
+was captured with `uv run mythinking profile`.
+
+Research mode is agentic: when a turn is classified as a research request,
+the Researcher gets tools (`web_search`, `fetch_url`, and -- only when
+`MYTHINKING_ENABLE_DEEP_RESEARCH=true` -- `run_deep_research`, a real
+multi-source pass via `gpt-researcher`) and decides for itself, from each
+tool's own description, whether it already has enough or needs to use one.
+No Python code gates *when* a tool gets used -- only whether
+`run_deep_research` exists in the toolset at all is controlled by that flag,
+since it's the one that's genuinely expensive. `web_search`/`fetch_url` are
+always available whenever a research turn runs. The web-search retriever
+defaults to the free, keyless DuckDuckGo (`ddgs`); set
+`MYTHINKING_RESEARCH_RETRIEVER=tavily` and `TAVILY_API_KEY` to use Tavily
+instead. Fetched content is stored in `data/store.sqlite` (a LangGraph
+`SqliteStore`, separate from `state.sqlite`) and is listable via
+`GET /projects/{project_id}/documents`. Ordinary chat replies get the same
+kind of self-directed lookup, scoped to the project's own saved
+evidence/research-tasks/branches/next-actions (no internet access) --
+the assistant calls a tool like `get_evidence_ledger` only when a turn's
+question actually needs it, instead of always receiving a fixed context
+bundle. Embeddings for retrieval (of fetched research content and, once a
+project's evidence or research tasks grow past
+`MYTHINKING_CONTEXT_RETRIEVAL_THRESHOLD` items, of project state itself)
+are produced through the same OpenRouter key, via `MYTHINKING_EMBEDDING_MODEL`
+(default `openai/text-embedding-3-small`).
 
 ## Frontend
 
@@ -132,6 +162,12 @@ src/mythinking/
   llm.py          The only model-construction boundary
   state.py        Typed thinking and project state
   persistence.py  Project snapshots and LangGraph checkpoints
+  documents.py    Full-text research documents and chunks (outside ProjectState)
+  retrieval.py    Typed wrapper around LangGraph's SqliteStore for semantic search
+  context.py      Scoped per-agent context formatting and threshold-based retrieval
+  deep_research.py  gpt-researcher integration, wrapped as a tool (M9)
+  tools.py        Agentic tools for the Researcher (web_search, fetch_url,
+                  run_deep_research) and Supervisor (read-only project-state lookups)
   prompts.py      Versioned prompt registry
   graph.py        Runnable LangGraph workflow
   runtime.py      Turn orchestration and persistence

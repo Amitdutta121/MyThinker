@@ -249,6 +249,115 @@ Suggested slice order:
 - M7c: the Next.js immersive workspace (branch/evidence/decision panels,
   animated mode transitions, session selector)
 
+### M8: Retrieval, document storage, and context management
+
+Goal: move past the prototype's two accumulated liabilities -- research mode
+had no real external search, and every specialist agent (plus the supervisor,
+redundantly) sent the *entire* `ProjectState` as raw JSON into every LLM call,
+an unbounded-growth problem as evidence/decisions/research tasks accumulate --
+without inventing new storage infrastructure where an already-installed one
+exists.
+
+Deliverables:
+
+- a `Document`/`DocumentChunk` store for full research-source text, kept
+  outside the small `ProjectState` JSON blob (`documents.py`),
+- one reusable retrieval mechanism backed by LangGraph's own
+  `langgraph.store.sqlite.SqliteStore` (already transitively installed via
+  `langgraph-checkpoint-sqlite`, with built-in sqlite-vec-backed vector
+  search) rather than a hand-rolled vector index (`retrieval.py`),
+- gpt-researcher wired into the `Researcher` specialist for real multi-source
+  web research, feature-flagged off by default (`deep_research.py`,
+  `Settings.enable_deep_research`), with the `ResearcherAnalysis` output
+  contract unchanged so `ResearchImporter.merge` needed no changes,
+- every specialist agent's context reduced to only the state its own prompt
+  actually references, with a threshold-based full-list-vs-retrieval split
+  for fields that can grow unboundedly (`context.py`, `ContextRetriever`),
+- a minimal `GET /projects/{project_id}/documents` read endpoint so stored
+  documents aren't stranded from the API.
+
+Scope:
+
+- storage/retrieval is additive infrastructure; it must not change the
+  merge/format contracts (`EvidenceLedger.merge`, `ResearchImporter.merge`,
+  `format_evidence_ledger`, etc.) that the rest of the graph already depends
+  on and tests against,
+- gpt-researcher's own `write_report()` is deliberately unused -- only
+  `conduct_research()` + `get_research_sources()` feed the existing typed
+  extraction step,
+- context-scoping change is per-agent and grounded in each prompt's actual
+  placeholders, not a blanket "strip project_state everywhere" pass.
+
+Acceptance criteria:
+
+- No specialist agent (or the supervisor) passes a raw
+  `project_state.model_dump_json()` dump into its prompt.
+- With `MYTHINKING_ENABLE_DEEP_RESEARCH=false` (default), a full turn
+  completes with no network research call.
+- With it enabled, a research turn stores and indexes real fetched sources,
+  and the resulting evidence lands in `ProjectState.evidence` exactly as the
+  pre-M8 single-LLM-pass researcher would have shaped it.
+- Every new component follows this repo's existing testing conventions
+  (`FakeModel`/`FakeStructuredModel` doubles, real `tmp_path` SQLite, pure
+  formatter tests) rather than introducing a new one.
+
+### M9: Agentic tool-calling for research and chat replies
+
+Goal: make the chat window feel agentic -- the assistant decides for itself,
+mid-turn, whether it already has enough information or needs to look
+something up, instead of following one fixed pipeline every time. Applies
+to two places: the `Researcher` (real web research, self-directed) and the
+`Supervisor` (self-directed lookup over the project's own saved notes, no
+internet access).
+
+This milestone deliberately reverses part of `M8`'s own follow-up work: `M8`
+added a hand-rolled deterministic keyword gate
+(`research.detect_deep_research_request`) deciding in Python whether the
+costly gpt-researcher pass could run. `M9` replaces that with the actual
+LangChain-idiomatic mechanism -- tools with clear docstrings, bound
+unconditionally, with the model's own tool-selection judgment (guided by
+those docstrings) deciding when to use them. See
+`docs/handoffs/2026-08-26-m9-agentic-tool-calling.md` for the full record,
+including why the reversal happened.
+
+Deliverables:
+
+- `tools.py`: `build_research_tools` (`web_search`, `fetch_url`, and --
+  only when `Settings.enable_deep_research` is on -- `run_deep_research`,
+  wrapping the still-present gpt-researcher integration) and
+  `build_context_tools` (read-only lookups over a project's own saved
+  evidence/research-tasks/branches/next-actions, no internet access),
+- `Researcher`/`SupervisorAgent` rewritten around `langchain.agents.create_agent`
+  with `response_format=<their existing typed schema>`, so the rest of the
+  graph's merge/post-processing logic never changes,
+- `ModelCallLimitMiddleware`/`ToolCallLimitMiddleware` as the cost/latency
+  guardrail replacing the removed keyword gate,
+- `researcher.v4.yaml`/`lead_partner.v9.yaml`: system prompts instructing
+  the model on when each tool is (and isn't) appropriate.
+
+Scope:
+
+- the output contract of both agents (`ResearcherAnalysis`, `SupervisorReply`)
+  and everything downstream of it is unchanged -- this milestone only
+  changes how that typed output gets produced,
+- graph-level routing (which turns even reach the Researcher/Supervisor)
+  is unchanged -- only what happens once inside those specialists changes,
+- no new commands or UI surface; the agentic behavior is invisible to the
+  user beyond the assistant sometimes doing more before it answers.
+
+Acceptance criteria:
+
+- No Python code decides which research tool is appropriate for a given
+  message -- that judgment is the model's, informed by each tool's
+  docstring.
+- `run_deep_research` is present in the Researcher's toolset only when
+  `enable_deep_research` is on; `web_search`/`fetch_url` are always present
+  whenever the Researcher runs at all.
+- The Supervisor never has internet-access tools, only read-only lookups
+  over the current project's own saved state.
+- A `create_agent` loop that ends without producing the expected typed
+  output degrades to a safe, honest fallback rather than crashing.
+
 ## Rules for milestone execution
 
 - Only one milestone should be in active implementation at a time.

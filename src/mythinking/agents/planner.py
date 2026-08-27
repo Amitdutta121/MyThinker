@@ -4,6 +4,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from mythinking.context import format_north_star_brief, format_open_questions
+from mythinking.exploration import format_branch_alternatives
+from mythinking.planning import format_next_actions
 from mythinking.prompts import PromptRegistry
 from mythinking.state import PlannerAnalysis, ProjectState
 
@@ -28,7 +31,10 @@ class Planner:
         prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
         rendered = prompt.render(
             {
-                "project_state": project_state.model_dump_json(indent=2),
+                "north_star_brief": format_north_star_brief(project_state),
+                "open_questions": format_open_questions(project_state),
+                "branch_alternatives": format_branch_alternatives(project_state),
+                "next_actions_plan": format_next_actions(project_state),
                 "user_message": user_message,
             }
         )

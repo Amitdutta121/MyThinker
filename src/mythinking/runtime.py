@@ -3,27 +3,34 @@
 from collections.abc import Iterator
 from pathlib import Path
 
+from langgraph.store.sqlite import SqliteStore
+
 from mythinking.agents.evidence_analyst import EvidenceAnalyst
 from mythinking.agents.explorer import Explorer
 from mythinking.agents.frame_analyst import FrameAnalyst
+from mythinking.agents.intent_classifier import IntentClassifier
 from mythinking.agents.planner import Planner
+from mythinking.agents.profile_extractor import ProfileExtractor
 from mythinking.agents.researcher import Researcher
 from mythinking.agents.supervisor import SupervisorAgent
 from mythinking.agents.synthesizer import Synthesizer
 from mythinking.branching import BranchSwitcher
 from mythinking.config import Settings, get_settings
+from mythinking.context import ContextRetriever
 from mythinking.drift import DriftJudge
 from mythinking.evidence import EvidenceLedger
 from mythinking.graph import build_thinking_graph
-from mythinking.llm import create_chat_model
-from mythinking.persistence import StateRepository, open_sqlite_checkpointer
+from mythinking.llm import create_chat_model, create_embeddings_model
+from mythinking.persistence import ProfileRepository, StateRepository, open_sqlite_checkpointer
 from mythinking.prompts import PromptRegistry
+from mythinking.retrieval import open_document_store
 from mythinking.state import (
     AssistantTurn,
     ProjectState,
     SessionGraphState,
     TurnStreamEvent,
     TurnStreamEventType,
+    UserProfile,
 )
 
 
@@ -39,6 +46,7 @@ class ThinkingRuntime:
         prompt_registry: PromptRegistry | None = None,
         frame_analyst: FrameAnalyst | None = None,
         supervisor: SupervisorAgent | None = None,
+        intent_classifier: IntentClassifier | None = None,
         drift_judge: DriftJudge | None = None,
         branch_switcher: BranchSwitcher | None = None,
         evidence_analyst: EvidenceAnalyst | None = None,
@@ -47,6 +55,8 @@ class ThinkingRuntime:
         synthesizer: Synthesizer | None = None,
         researcher: Researcher | None = None,
         planner: Planner | None = None,
+        profile_extractor: ProfileExtractor | None = None,
+        profile_repository: ProfileRepository | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.repository = repository or StateRepository(self.settings.state_database_path)
@@ -58,7 +68,33 @@ class ThinkingRuntime:
             self.prompt_registry,
             create_chat_model(self.settings),
         )
+
+        # The Supervisor's read-only note-lookup tools and the Researcher's
+        # agentic tool loop both need a ContextRetriever/store -- built once
+        # here, only when at least one of them isn't already overridden by
+        # a caller (e.g. a test double), so a real API key/embeddings client
+        # is never required just to construct a runtime full of fakes.
+        self.store: SqliteStore | None = None
+        context_retriever: ContextRetriever | None = None
+        if supervisor is None or researcher is None:
+            self._store_cm = open_document_store(
+                self.settings.store_database_path,
+                create_embeddings_model(self.settings),
+                dimensions=self.settings.embedding_dimensions,
+            )
+            self.store = self._store_cm.__enter__()
+            context_retriever = ContextRetriever(
+                self.store,
+                threshold=self.settings.context_retrieval_threshold,
+                top_k=self.settings.context_retrieval_top_k,
+            )
+
         self.supervisor = supervisor or SupervisorAgent(
+            self.prompt_registry,
+            create_chat_model(self.settings),
+            context_retriever,
+        )
+        self.intent_classifier = intent_classifier or IntentClassifier(
             self.prompt_registry,
             create_chat_model(self.settings),
         )
@@ -83,11 +119,23 @@ class ThinkingRuntime:
         self.researcher = researcher or Researcher(
             self.prompt_registry,
             create_chat_model(self.settings),
+            context_retriever,
+            self.store,
+            self.settings,
         )
         self.planner = planner or Planner(
             self.prompt_registry,
             create_chat_model(self.settings),
         )
+        self.profile_repository = profile_repository or ProfileRepository(
+            self.settings.state_database_path
+        )
+        self.profile_extractor = profile_extractor
+        if self.profile_extractor is None and self.settings.enable_profile_extraction:
+            self.profile_extractor = ProfileExtractor(
+                self.prompt_registry,
+                create_chat_model(self.settings),
+            )
 
     def run_turn(self, user_message: str, project_id: str | None = None) -> AssistantTurn:
         message = user_message.strip()
@@ -105,6 +153,7 @@ class ThinkingRuntime:
                 self.frame_analyst,
                 self.supervisor,
                 self.repository,
+                self.intent_classifier,
                 drift_judge=self.drift_judge,
                 branch_switcher=self.branch_switcher,
                 evidence_analyst=self.evidence_analyst,
@@ -113,7 +162,10 @@ class ThinkingRuntime:
                 synthesizer=self.synthesizer,
                 researcher=self.researcher,
                 planner=self.planner,
+                profile_extractor=self.profile_extractor,
+                profile_repository=self.profile_repository,
                 checkpointer=checkpointer,
+                store=self.store,
             )
             result = graph.invoke(
                 graph_input,
@@ -152,6 +204,7 @@ class ThinkingRuntime:
                 self.frame_analyst,
                 self.supervisor,
                 self.repository,
+                self.intent_classifier,
                 drift_judge=self.drift_judge,
                 branch_switcher=self.branch_switcher,
                 evidence_analyst=self.evidence_analyst,
@@ -160,7 +213,10 @@ class ThinkingRuntime:
                 synthesizer=self.synthesizer,
                 researcher=self.researcher,
                 planner=self.planner,
+                profile_extractor=self.profile_extractor,
+                profile_repository=self.profile_repository,
                 checkpointer=checkpointer,
+                store=self.store,
             )
             final_turn: AssistantTurn | None = None
             for update in graph.stream(
@@ -184,6 +240,9 @@ class ThinkingRuntime:
 
     def get_project_state(self, project_id: str) -> ProjectState | None:
         return self.repository.load(project_id)
+
+    def get_user_profile(self) -> UserProfile:
+        return self.profile_repository.load()
 
     def _load_project_state(self, project_id: str | None) -> ProjectState:
         if project_id is None:

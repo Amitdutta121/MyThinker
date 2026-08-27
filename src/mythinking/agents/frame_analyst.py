@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from mythinking.context import format_assumptions, format_north_star_brief, format_open_questions
 from mythinking.prompts import PromptRegistry
 from mythinking.state import FrameAnalysis, ProjectState
 
@@ -28,7 +29,9 @@ class FrameAnalyst:
         prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
         rendered = prompt.render(
             {
-                "project_state": project_state.model_dump_json(indent=2),
+                "north_star_brief": format_north_star_brief(project_state),
+                "assumptions": format_assumptions(project_state),
+                "open_questions": format_open_questions(project_state),
                 "user_message": user_message,
             }
         )

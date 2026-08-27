@@ -1,4 +1,4 @@
-"""Deterministic research routing plus an evidence-import pipeline for scoped findings."""
+"""Research-task matching plus an evidence-import pipeline for scoped findings."""
 
 import re
 
@@ -6,30 +6,8 @@ from mythinking.state import (
     EvidenceItem,
     ProjectState,
     ResearcherAnalysis,
-    ResearchIntent,
     ResearchTask,
     ResearchTaskStatus,
-    ResearchTrigger,
-)
-
-_EXPLICIT_TRIGGERS = (
-    "research this",
-    "research that",
-    "let's research",
-    "lets research",
-    "start researching",
-    "look into this",
-    "look into that",
-    "look this up",
-    "look that up",
-    "can you research",
-    "please research",
-    "go research",
-    "investigate this",
-    "investigate that",
-    "find out more about",
-    "dig into this",
-    "dig into that",
 )
 
 _MATCH_STOP_WORDS = {
@@ -77,22 +55,6 @@ _MATCH_STOP_WORDS = {
     "you",
     "your",
 }
-
-
-class ResearchRouter:
-    """Classify a turn as an explicit request to enter research mode, or neither."""
-
-    def detect(self, project_state: ProjectState, user_message: str) -> ResearchIntent:
-        lowered = _normalize(user_message)
-        if not any(phrase in lowered for phrase in _EXPLICIT_TRIGGERS):
-            return ResearchIntent()
-
-        task = _best_matching_open_task(project_state, lowered)
-        return ResearchIntent(
-            trigger=ResearchTrigger.EXPLICIT_REQUEST,
-            research_task_id=task.id if task else "",
-            matched_text=user_message.strip(),
-        )
 
 
 class ResearchImporter:
@@ -160,10 +122,10 @@ def _find_task(project_state: ProjectState, research_task_id: str) -> ResearchTa
     return None
 
 
-def _best_matching_open_task(
-    project_state: ProjectState, lowered_message: str
-) -> ResearchTask | None:
-    message_tokens = _match_tokens(lowered_message)
+def best_matching_open_task(project_state: ProjectState, user_message: str) -> ResearchTask | None:
+    """Pick the open research task whose question shares the most tokens with the message."""
+
+    message_tokens = _match_tokens(user_message)
     if not message_tokens:
         return None
     best_task: ResearchTask | None = None

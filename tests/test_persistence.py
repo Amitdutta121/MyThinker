@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from mythinking.persistence import StateRepository
-from mythinking.state import NorthStar, ProjectState
+from mythinking.persistence import ProfileRepository, StateRepository
+from mythinking.state import NorthStar, ProjectState, UserProfile
 
 
 def test_state_repository_round_trip(tmp_path: Path) -> None:
@@ -52,3 +52,33 @@ def test_state_repository_delete(tmp_path: Path) -> None:
     assert repository.delete(state.project_id)
     assert repository.load(state.project_id) is None
     assert not repository.delete(state.project_id)
+
+
+def test_profile_repository_load_returns_an_empty_profile_when_none_saved(
+    tmp_path: Path,
+) -> None:
+    repository = ProfileRepository(tmp_path / "state.sqlite")
+
+    profile = repository.load()
+
+    assert profile.role == ""
+    assert profile.expertise == []
+
+
+def test_profile_repository_round_trip(tmp_path: Path) -> None:
+    repository = ProfileRepository(tmp_path / "state.sqlite")
+    profile = UserProfile(role="Backend engineer", expertise=["Distributed systems"])
+
+    repository.save(profile)
+    loaded = repository.load()
+
+    assert loaded.role == "Backend engineer"
+    assert loaded.expertise == ["Distributed systems"]
+
+
+def test_profile_repository_save_overwrites_the_singleton(tmp_path: Path) -> None:
+    repository = ProfileRepository(tmp_path / "state.sqlite")
+    repository.save(UserProfile(role="Backend engineer"))
+    repository.save(UserProfile(role="ML engineer"))
+
+    assert repository.load().role == "ML engineer"

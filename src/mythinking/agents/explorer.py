@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from mythinking.context import format_north_star_brief
+from mythinking.exploration import format_all_branch_names, format_branch_alternatives
 from mythinking.prompts import PromptRegistry
 from mythinking.state import ExplorerAnalysis, ProjectState
 
@@ -28,7 +30,9 @@ class Explorer:
         prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
         rendered = prompt.render(
             {
-                "project_state": project_state.model_dump_json(indent=2),
+                "north_star_brief": format_north_star_brief(project_state),
+                "all_branch_names": format_all_branch_names(project_state),
+                "branch_alternatives": format_branch_alternatives(project_state),
                 "user_message": user_message,
             }
         )

@@ -61,6 +61,41 @@ class Settings(BaseSettings):
         le=2,
         validation_alias="MYTHINKING_TEMPERATURE",
     )
+    enable_profile_extraction: bool = Field(
+        default=False,
+        validation_alias="MYTHINKING_ENABLE_PROFILE_EXTRACTION",
+    )
+    embedding_model: str = Field(
+        default="openai/text-embedding-3-small",
+        validation_alias="MYTHINKING_EMBEDDING_MODEL",
+    )
+    embedding_dimensions: int = Field(
+        default=1536,
+        ge=1,
+        validation_alias="MYTHINKING_EMBEDDING_DIMENSIONS",
+    )
+    context_retrieval_threshold: int = Field(
+        default=20,
+        ge=1,
+        validation_alias="MYTHINKING_CONTEXT_RETRIEVAL_THRESHOLD",
+    )
+    context_retrieval_top_k: int = Field(
+        default=6,
+        ge=1,
+        validation_alias="MYTHINKING_CONTEXT_RETRIEVAL_TOP_K",
+    )
+    enable_deep_research: bool = Field(
+        default=False,
+        validation_alias="MYTHINKING_ENABLE_DEEP_RESEARCH",
+    )
+    research_retriever: Literal["duckduckgo", "tavily"] = Field(
+        default="duckduckgo",
+        validation_alias="MYTHINKING_RESEARCH_RETRIEVER",
+    )
+    tavily_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias="TAVILY_API_KEY",
+    )
 
     @property
     def state_database_path(self) -> Path:
@@ -69,6 +104,10 @@ class Settings(BaseSettings):
     @property
     def checkpoint_database_path(self) -> Path:
         return self.data_dir / "checkpoints.sqlite"
+
+    @property
+    def store_database_path(self) -> Path:
+        return self.data_dir / "store.sqlite"
 
     @property
     def has_api_key(self) -> bool:
@@ -81,6 +120,19 @@ class Settings(BaseSettings):
             )
         assert self.openrouter_api_key is not None
         return self.openrouter_api_key.get_secret_value()
+
+    @property
+    def has_tavily_key(self) -> bool:
+        return bool(self.tavily_api_key and self.tavily_api_key.get_secret_value())
+
+    def require_tavily_key(self) -> str:
+        if not self.has_tavily_key:
+            raise RuntimeError(
+                "TAVILY_API_KEY is not configured. Set it in .env or switch "
+                "MYTHINKING_RESEARCH_RETRIEVER to 'duckduckgo'."
+            )
+        assert self.tavily_api_key is not None
+        return self.tavily_api_key.get_secret_value()
 
 
 @lru_cache(maxsize=1)

@@ -94,6 +94,14 @@ class PlanTrigger(StrEnum):
     EXPLICIT_REQUEST = "explicit_request"
 
 
+class TurnIntent(StrEnum):
+    NONE = "none"
+    EXPLORE = "explore"
+    CONVERGE = "converge"
+    RESEARCH = "research"
+    PLAN = "plan"
+
+
 class NorthStar(BaseModel):
     """The compact goal representation kept visible throughout a project."""
 
@@ -252,6 +260,17 @@ class SynthesizerAnalysis(BaseModel):
     rationale: str = ""
 
 
+class IntentClassification(BaseModel):
+    """Semantic classification of what a turn is asking for, from a single LLM call.
+
+    Downstream nodes derive `ExplorationIntent`/`ResearchIntent`/`PlanIntent`
+    from this one result so `choose_mode` (which only reads those three
+    typed objects) is unaffected by how the classification was produced.
+    """
+
+    intent: TurnIntent = TurnIntent.NONE
+
+
 class ExplorationIntent(BaseModel):
     """Deterministic classification of an explicit explore/converge request."""
 
@@ -298,6 +317,36 @@ class PlannerAnalysis(BaseModel):
 
     summary: str = ""
     next_actions_to_add: list[NextActionDraft] = Field(default_factory=list)
+
+
+class UserProfile(BaseModel):
+    """Cross-project facts about the user, off by default (M6c).
+
+    Deliberately narrow: only stable, low-sensitivity, explicitly-stated
+    facts that help tailor collaboration (role, expertise, working style).
+    Never a place for sensitive personal details -- see
+    `prompts/profile_extractor.v1.yaml`.
+    """
+
+    role: str = ""
+    expertise: list[str] = Field(default_factory=list)
+    working_style: list[str] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class UserProfileUpdate(BaseModel):
+    """Partial update emitted by the Profile Extractor."""
+
+    role: str | None = None
+    expertise_to_add: list[str] = Field(default_factory=list)
+    working_style_to_add: list[str] = Field(default_factory=list)
+
+
+class ProfileAnalysis(BaseModel):
+    """Structured user-profile update used by the M6c graph."""
+
+    summary: str = ""
+    profile_update: UserProfileUpdate = Field(default_factory=UserProfileUpdate)
 
 
 class DriftAssessment(BaseModel):
@@ -404,6 +453,7 @@ class SessionGraphState(BaseModel):
     frame_analysis: FrameAnalysis | None = None
     drift_assessment: DriftAssessment | None = None
     evidence_analysis: EvidenceAnalysis | None = None
+    intent_classification: IntentClassification | None = None
     exploration_intent: ExplorationIntent | None = None
     exploration_analysis: ExplorerAnalysis | None = None
     synthesis: SynthesizerAnalysis | None = None
@@ -411,4 +461,5 @@ class SessionGraphState(BaseModel):
     research_analysis: ResearcherAnalysis | None = None
     plan_intent: PlanIntent | None = None
     planner_analysis: PlannerAnalysis | None = None
+    profile_analysis: ProfileAnalysis | None = None
     assistant_turn: AssistantTurn | None = None

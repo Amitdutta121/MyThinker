@@ -19,3 +19,7 @@ frontend/out/
 frontend/.env.local
 frontend/next-env.d.ts
 frontend/*.tsbuildinfo
+
+# local dev logs
+.backend_log.txt
+.frontend_log.txt

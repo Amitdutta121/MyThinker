@@ -1,8 +1,13 @@
 from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
+from langchain_core.embeddings import Embeddings
 
 from mythinking.api import create_app
+from mythinking.documents import Document
+from mythinking.retrieval import index_document, open_document_store
 from mythinking.state import (
     AssistantTurn,
     NorthStar,
@@ -33,6 +38,7 @@ class FakeRuntime:
         error: Exception | None = None,
         stream_events: Iterator[TurnStreamEvent] | list[TurnStreamEvent] | None = None,
         stream_error: Exception | None = None,
+        store: Any | None = None,
     ) -> None:
         self.turn = turn
         self.project_states = project_states or {}
@@ -42,6 +48,7 @@ class FakeRuntime:
         self.stream_events = stream_events
         self.stream_error = stream_error
         self.stream_calls: list[tuple[str, str | None]] = []
+        self.store = store
 
     def run_turn(self, message: str, project_id: str | None = None) -> AssistantTurn:
         self.calls.append((message, project_id))
@@ -225,6 +232,40 @@ def test_get_project_returns_404_for_unknown_project() -> None:
 
     assert response.status_code == 404
     assert "missing" in response.json()["detail"]
+
+
+class _FakeEmbeddings(Embeddings):
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed_query(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [1.0]
+
+
+def test_list_project_documents_returns_empty_list_when_no_store() -> None:
+    client = TestClient(create_app(FakeRuntime()))
+
+    response = client.get("/projects/proj-1/documents")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_project_documents_returns_stored_documents(tmp_path: Path) -> None:
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=1) as store:
+        document = Document(
+            project_id="proj-1", title="A source", source_url="https://x", content="body"
+        )
+        index_document(store, "proj-1", document)
+        runtime = FakeRuntime(store=store)
+        client = TestClient(create_app(runtime))
+
+        response = client.get("/projects/proj-1/documents")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        assert body[0]["title"] == "A source"
 
 
 def test_cors_allows_the_frontend_dev_origin() -> None:

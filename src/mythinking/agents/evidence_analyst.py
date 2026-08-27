@@ -4,7 +4,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from mythinking.evidence import format_evidence_ledger
 from mythinking.prompts import PromptRegistry
+from mythinking.research import format_open_research_tasks
 from mythinking.state import EvidenceAnalysis, ProjectState
 
 
@@ -28,7 +30,8 @@ class EvidenceAnalyst:
         prompt = self.prompt_registry.get(self.prompt_id, self.prompt_version)
         rendered = prompt.render(
             {
-                "project_state": project_state.model_dump_json(indent=2),
+                "evidence_ledger": format_evidence_ledger(project_state),
+                "open_research_tasks": format_open_research_tasks(project_state),
                 "user_message": user_message,
             }
         )

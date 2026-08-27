@@ -1,12 +1,15 @@
 from pathlib import Path
 
+from langchain_core.embeddings import Embeddings
+
 from mythinking.graph import (
     apply_frame_analysis,
     build_thinking_graph,
     capture_node,
     choose_mode,
 )
-from mythinking.persistence import StateRepository
+from mythinking.persistence import ProfileRepository, StateRepository
+from mythinking.retrieval import open_document_store, search_content
 from mythinking.state import (
     AlternativeDraft,
     AssistantTurn,
@@ -23,20 +26,26 @@ from mythinking.state import (
     FrameAnalysis,
     IdeaBranch,
     IntentAction,
+    IntentClassification,
     NextActionDraft,
     NorthStarUpdate,
     PlanIntent,
     PlannerAnalysis,
     PlanTrigger,
+    ProfileAnalysis,
     ProjectState,
     ResearcherAnalysis,
     ResearchIntent,
     ResearchTask,
+    ResearchTaskDraft,
     ResearchTaskStatus,
     ResearchTrigger,
     SessionGraphState,
     SynthesizerAnalysis,
     ThinkingMode,
+    TurnIntent,
+    UserProfile,
+    UserProfileUpdate,
 )
 
 
@@ -98,6 +107,16 @@ class FakeSupervisor:
             message=f"{project_state.current_mode.value}:{user_message}",
             question=question,
         )
+
+
+class FakeIntentClassifier:
+    def __init__(self, intent: TurnIntent = TurnIntent.NONE) -> None:
+        self.intent = intent
+        self.calls: list[str] = []
+
+    def classify(self, user_message: str) -> IntentClassification:
+        self.calls.append(user_message)
+        return IntentClassification(intent=self.intent)
 
 
 def test_capture_node_trims_user_message() -> None:
@@ -218,7 +237,7 @@ def test_build_thinking_graph_runs_capture_flow_and_persists_state(tmp_path: Pat
     )
     frame_analyst = FakeFrameAnalyst(analysis)
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, FakeIntentClassifier())
 
     initial_state = SessionGraphState(
         project_state=ProjectState(),
@@ -252,7 +271,7 @@ def test_build_thinking_graph_runs_clarify_flow_when_question_is_needed(
     )
     frame_analyst = FakeFrameAnalyst(analysis)
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, FakeIntentClassifier())
 
     initial_state = SessionGraphState(
         project_state=ProjectState(),
@@ -273,7 +292,7 @@ def test_build_thinking_graph_preserves_detected_tangent_as_branch(
     repository = StateRepository(tmp_path / "state.sqlite")
     frame_analyst = FakeFrameAnalyst(FrameAnalysis())
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, FakeIntentClassifier())
     project_state = ProjectState()
     project_state.north_star.problem_statement = "Product idea notes are scattered"
     project_state.north_star.desired_outcome = "Keep the idea thread focused"
@@ -305,7 +324,7 @@ def test_build_thinking_graph_does_not_merge_tangent_frame_updates_into_north_st
     )
     frame_analyst = FakeFrameAnalyst(analysis)
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, FakeIntentClassifier())
     project_state = ProjectState()
     project_state.north_star.problem_statement = "Product idea notes are scattered"
     project_state.north_star.desired_outcome = "Keep the idea thread focused"
@@ -354,7 +373,7 @@ def test_ambiguous_drift_without_a_judge_falls_back_to_frame_merge(tmp_path: Pat
     analysis = FrameAnalysis(north_star=NorthStarUpdate(current_hypothesis="Try a narrow beta"))
     frame_analyst = FakeFrameAnalyst(analysis)
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, FakeIntentClassifier())
 
     initial_state = SessionGraphState(
         project_state=_anchored_project_state(),
@@ -379,7 +398,9 @@ def test_ambiguous_drift_resolved_by_judge_can_trigger_challenge_mode(tmp_path: 
         branch_name="Riskiest Part",
     )
     judge = FakeDriftJudge(resolved)
-    graph = build_thinking_graph(frame_analyst, supervisor, repository, drift_judge=judge)
+    graph = build_thinking_graph(
+        frame_analyst, supervisor, repository, FakeIntentClassifier(), drift_judge=judge
+    )
 
     initial_state = SessionGraphState(
         project_state=_anchored_project_state(),
@@ -398,7 +419,7 @@ def test_build_thinking_graph_switches_active_branch_and_skips_frame(tmp_path: P
     repository = StateRepository(tmp_path / "state.sqlite")
     frame_analyst = FakeFrameAnalyst(FrameAnalysis())
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, FakeIntentClassifier())
 
     project_state = _anchored_project_state()
     project_state.branches = [
@@ -455,6 +476,7 @@ def test_build_thinking_graph_merges_extracted_evidence_into_project_state(
         frame_analyst,
         supervisor,
         repository,
+        FakeIntentClassifier(),
         evidence_analyst=evidence_analyst,
     )
 
@@ -477,7 +499,7 @@ def test_build_thinking_graph_skips_evidence_extraction_without_an_analyst(
     repository = StateRepository(tmp_path / "state.sqlite")
     frame_analyst = FakeFrameAnalyst(FrameAnalysis())
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, FakeIntentClassifier())
 
     initial_state = SessionGraphState(
         project_state=_anchored_project_state(),
@@ -488,6 +510,60 @@ def test_build_thinking_graph_skips_evidence_extraction_without_an_analyst(
 
     assert result.evidence_analysis is None
     assert result.project_state.evidence == []
+
+
+class _FakeEmbeddings(Embeddings):
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed_query(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [float(len(text) % 5), 1.0]
+
+
+def test_build_thinking_graph_indexes_newly_added_evidence_and_research_tasks(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    evidence_analyst = FakeEvidenceAnalyst(
+        EvidenceAnalysis(
+            evidence_to_add=[
+                EvidenceDraft(
+                    claim="Remote work always reduces innovation", kind=EvidenceKind.HYPOTHESIS
+                )
+            ],
+            research_tasks_to_add=[
+                ResearchTaskDraft(question="Does remote work reduce innovation?")
+            ],
+        )
+    )
+
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=2) as store:
+        graph = build_thinking_graph(
+            frame_analyst,
+            supervisor,
+            repository,
+            FakeIntentClassifier(),
+            evidence_analyst=evidence_analyst,
+            store=store,
+        )
+
+        initial_state = SessionGraphState(
+            project_state=_anchored_project_state(),
+            user_message="Remote work always reduces innovation, so require office attendance.",
+        )
+
+        result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+        evidence_hits = search_content(
+            store, result.project_state.project_id, "evidence", "remote work", top_k=5
+        )
+        task_hits = search_content(
+            store, result.project_state.project_id, "research_task", "remote work", top_k=5
+        )
+        assert len(evidence_hits) == 1
+        assert len(task_hits) == 1
 
 
 def test_build_thinking_graph_skips_evidence_extraction_for_branch_commands(
@@ -501,6 +577,7 @@ def test_build_thinking_graph_skips_evidence_extraction_for_branch_commands(
         frame_analyst,
         supervisor,
         repository,
+        FakeIntentClassifier(),
         evidence_analyst=evidence_analyst,
     )
 
@@ -561,6 +638,7 @@ def test_build_thinking_graph_routes_explore_requests_and_adds_branches(
         frame_analyst,
         supervisor,
         repository,
+        FakeIntentClassifier(TurnIntent.EXPLORE),
         explorer=explorer,
     )
 
@@ -598,6 +676,7 @@ def test_build_thinking_graph_routes_converge_requests_and_merges_branches(
         frame_analyst,
         supervisor,
         repository,
+        FakeIntentClassifier(TurnIntent.CONVERGE),
         synthesizer=synthesizer,
     )
 
@@ -631,7 +710,8 @@ def test_build_thinking_graph_skips_explore_and_converge_without_specialists(
     repository = StateRepository(tmp_path / "state.sqlite")
     frame_analyst = FakeFrameAnalyst(FrameAnalysis())
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    intent_classifier = FakeIntentClassifier(TurnIntent.EXPLORE)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, intent_classifier)
 
     initial_state = SessionGraphState(
         project_state=_anchored_project_state(),
@@ -682,6 +762,7 @@ def test_build_thinking_graph_routes_research_requests_and_imports_evidence(
         frame_analyst,
         supervisor,
         repository,
+        FakeIntentClassifier(TurnIntent.RESEARCH),
         researcher=researcher,
     )
 
@@ -711,7 +792,8 @@ def test_build_thinking_graph_skips_research_without_a_researcher(
     repository = StateRepository(tmp_path / "state.sqlite")
     frame_analyst = FakeFrameAnalyst(FrameAnalysis())
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    intent_classifier = FakeIntentClassifier(TurnIntent.RESEARCH)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, intent_classifier)
 
     initial_state = SessionGraphState(
         project_state=_anchored_project_state(),
@@ -723,6 +805,49 @@ def test_build_thinking_graph_skips_research_without_a_researcher(
     assert result.research_analysis is None
     assert result.project_state.evidence == []
     assert result.project_state.current_mode is ThinkingMode.RESEARCH
+
+
+def test_build_thinking_graph_indexes_evidence_found_during_research(tmp_path: Path) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    researcher = FakeResearcher(
+        ResearcherAnalysis(
+            findings_to_add=[
+                EvidenceDraft(
+                    claim="The changelog shows weekly releases",
+                    kind=EvidenceKind.FACT,
+                    source_title="Internal changelog",
+                )
+            ],
+            task_resolved=True,
+        )
+    )
+
+    with open_document_store(tmp_path / "store.sqlite", _FakeEmbeddings(), dimensions=2) as store:
+        graph = build_thinking_graph(
+            frame_analyst,
+            supervisor,
+            repository,
+            FakeIntentClassifier(TurnIntent.RESEARCH),
+            researcher=researcher,
+            store=store,
+        )
+
+        project_state = _anchored_project_state()
+        task = ResearchTask(question="Do we ship weekly?")
+        project_state.research_tasks = [task]
+        initial_state = SessionGraphState(
+            project_state=project_state,
+            user_message="Can you research whether we ship weekly?",
+        )
+
+        result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+        hits = search_content(
+            store, result.project_state.project_id, "evidence", "weekly releases", top_k=5
+        )
+        assert len(hits) == 1
 
 
 class FakePlanner:
@@ -755,6 +880,7 @@ def test_build_thinking_graph_routes_planning_requests_and_adds_next_actions(
         frame_analyst,
         supervisor,
         repository,
+        FakeIntentClassifier(TurnIntent.PLAN),
         planner=planner,
     )
 
@@ -781,7 +907,8 @@ def test_build_thinking_graph_skips_planning_without_a_planner(
     repository = StateRepository(tmp_path / "state.sqlite")
     frame_analyst = FakeFrameAnalyst(FrameAnalysis())
     supervisor = FakeSupervisor()
-    graph = build_thinking_graph(frame_analyst, supervisor, repository)
+    intent_classifier = FakeIntentClassifier(TurnIntent.PLAN)
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, intent_classifier)
 
     initial_state = SessionGraphState(
         project_state=_anchored_project_state(),
@@ -793,3 +920,63 @@ def test_build_thinking_graph_skips_planning_without_a_planner(
     assert result.planner_analysis is None
     assert result.project_state.next_actions == []
     assert result.project_state.current_mode is ThinkingMode.DECIDE
+
+
+class FakeProfileExtractor:
+    def __init__(self, analysis: ProfileAnalysis) -> None:
+        self.analysis = analysis
+        self.calls: list[tuple[UserProfile, str]] = []
+
+    def analyze(self, user_profile: UserProfile, user_message: str) -> ProfileAnalysis:
+        self.calls.append((user_profile, user_message))
+        return self.analysis
+
+
+def test_build_thinking_graph_extracts_and_persists_profile_on_the_frame_path(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    profile_repository = ProfileRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    profile_extractor = FakeProfileExtractor(
+        ProfileAnalysis(profile_update=UserProfileUpdate(role="Backend engineer"))
+    )
+    graph = build_thinking_graph(
+        frame_analyst,
+        supervisor,
+        repository,
+        FakeIntentClassifier(),
+        profile_extractor=profile_extractor,
+        profile_repository=profile_repository,
+    )
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="I'm a backend engineer thinking through this idea.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert profile_extractor.calls
+    assert result.profile_analysis is not None
+    assert result.profile_analysis.profile_update.role == "Backend engineer"
+    assert profile_repository.load().role == "Backend engineer"
+
+
+def test_build_thinking_graph_skips_profile_extraction_without_an_extractor(
+    tmp_path: Path,
+) -> None:
+    repository = StateRepository(tmp_path / "state.sqlite")
+    frame_analyst = FakeFrameAnalyst(FrameAnalysis())
+    supervisor = FakeSupervisor()
+    graph = build_thinking_graph(frame_analyst, supervisor, repository, FakeIntentClassifier())
+
+    initial_state = SessionGraphState(
+        project_state=_anchored_project_state(),
+        user_message="I'm a backend engineer thinking through this idea.",
+    )
+
+    result = SessionGraphState.model_validate(graph.invoke(initial_state))
+
+    assert result.profile_analysis is None

@@ -124,6 +124,23 @@ class DriftDetector:
             if parking_language:
                 signals.append(DriftSignal.PARKING_LANGUAGE)
 
+            if _is_composite(message):
+                # The message has more than one sentence, so the trigger
+                # phrase (e.g. "unrelated") does not reliably mark which
+                # sentence is the actual tangent -- bag-of-words heuristics
+                # can grab the on-topic continuation instead. Defer to model
+                # judgment rather than persist a misleading branch name.
+                return DriftAssessment(
+                    status=DriftStatus.AMBIGUOUS,
+                    reason=(
+                        "A drift phrase was detected, but the message spans "
+                        "multiple sentences and the deterministic heuristic "
+                        "cannot reliably isolate which sentence is the "
+                        "tangent; model judgment is required."
+                    ),
+                    signals=signals,
+                )
+
             tangent_summary = _summarize_tangent(message)
             disposition = (
                 TangentDisposition.PARKED if parking_language else TangentDisposition.BRANCH
@@ -271,6 +288,15 @@ def _tokenize(value: str) -> set[str]:
 
 def _normalize_text(value: str) -> str:
     return " ".join(value.lower().split())
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _is_composite(message: str) -> bool:
+    """True when the message has more than one sentence."""
+    sentences = [part for part in _SENTENCE_SPLIT_RE.split(message.strip()) if part.strip()]
+    return len(sentences) > 1
 
 
 def _summarize_tangent(message: str) -> str:
