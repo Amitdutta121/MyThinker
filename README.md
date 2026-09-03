@@ -281,8 +281,6 @@ Contributions are welcome — issues, discussion, and PRs alike.
    either an evidence entry or an explicit `product_hypothesis` label, plus an
    evaluation case in `evals/`.
 
-Never commit API keys, conversation data, databases, or model traces.
-
 ## License
 
 [MIT](LICENSE).
