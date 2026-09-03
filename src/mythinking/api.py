@@ -19,8 +19,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from mythinking.documents import Document
-from mythinking.observability import configure_tracing
 from mythinking.ingest import MAX_UPLOAD_BYTES, IngestError, ingest_file
+from mythinking.observability import configure_tracing
 from mythinking.retrieval import delete_document, delete_documents, list_documents
 from mythinking.runtime import ThinkingRuntime, create_runtime
 from mythinking.state import (

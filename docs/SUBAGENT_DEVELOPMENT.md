@@ -12,7 +12,7 @@ delegate tightly scoped work to subagents in later sessions.
 
 ## Required order of work
 
-1. Read [AGENTS.md](D:/MyThinking/AGENTS.md) and [IMPLEMENTATION_PLAN.md](D:/MyThinking/docs/IMPLEMENTATION_PLAN.md).
+1. Read [AGENTS.md](../AGENTS.md) and [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md).
 2. Select one milestone.
 3. Freeze the interfaces for that milestone.
 4. Split work into independent slices.

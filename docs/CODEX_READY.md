@@ -12,15 +12,15 @@ This repository is prepared for multi-session Codex implementation.
 
 ## Source of truth
 
-- Product and engineering guardrails: [AGENTS.md](D:/MyThinking/AGENTS.md)
-- Human overview and setup: [README.md](D:/MyThinking/README.md)
-- Implementation roadmap: [IMPLEMENTATION_PLAN.md](D:/MyThinking/docs/IMPLEMENTATION_PLAN.md)
-- Subagent workflow: [SUBAGENT_DEVELOPMENT.md](D:/MyThinking/docs/SUBAGENT_DEVELOPMENT.md)
-- Session handoff template: [SESSION_HANDOFF_TEMPLATE.md](D:/MyThinking/docs/SESSION_HANDOFF_TEMPLATE.md)
+- Product and engineering guardrails: [AGENTS.md](../AGENTS.md)
+- Human overview and setup: [README.md](../README.md)
+- Implementation roadmap: [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)
+- Subagent workflow: [SUBAGENT_DEVELOPMENT.md](./SUBAGENT_DEVELOPMENT.md)
+- Session handoff template: [SESSION_HANDOFF_TEMPLATE.md](./SESSION_HANDOFF_TEMPLATE.md)
 
 ## Next session startup
 
-1. Read [AGENTS.md](D:/MyThinking/AGENTS.md) and [docs/IMPLEMENTATION_PLAN.md](D:/MyThinking/docs/IMPLEMENTATION_PLAN.md).
+1. Read [AGENTS.md](../AGENTS.md) and [docs/IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md).
 2. Pick exactly one milestone or one tightly scoped slice of a milestone.
 3. Use subagents for parallelizable work only after interfaces and acceptance
    criteria are fixed.

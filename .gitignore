@@ -1,4 +1,5 @@
 .env
+.env.local
 .venv/
 .pytest_cache/
 .ruff_cache/
@@ -13,6 +14,10 @@ data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 
+# local scratch / experiment dirs
+custom/
+.scratch_leak_test/
+
 # MLflow tracing store + artifacts
 mlflow.db
 mlruns/
@@ -26,6 +31,7 @@ frontend/.env.local
 frontend/.env.local.bak
 frontend/next-env.d.ts
 frontend/*.tsbuildinfo
+frontend/storybook-static/
 
 # local dev logs
 .backend_log.txt
@@ -34,3 +40,9 @@ frontend/*.tsbuildinfo
 
 # editor / IDE
 .idea/
+.vscode/
+*.swp
+.DS_Store
+
+# local agent config
+.claude/

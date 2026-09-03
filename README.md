@@ -226,6 +226,11 @@ src/mythinking/
   context.py      Scoped context formatting and threshold-based retrieval
   gates.py        North Star / decision / evidence structured-output gates
   board.py        Mutable state holder, mode derivation, plan staleness, frame merge
+  exploration.py  Explore/converge merge and formatting service
+  planning.py     Next-action planning merge/formatting service
+  evidence.py     Evidence ledger merge and citation rendering
+  research.py     Research-task matching and scoped evidence-import pipeline
+  profile.py      User-profile merge and prompt rendering
   tools.py        The agent's tools: precondition-gated thinking tools,
                   read-only lookups, document tools, and web tools
   agents/         Specialist structured-output engines invoked inside tools

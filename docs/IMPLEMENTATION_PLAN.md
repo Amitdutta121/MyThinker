@@ -360,7 +360,7 @@ Acceptance criteria:
 
 ## Milestone 10: single-agent Thinker (architecture pivot)
 
-Validated in `notebooks/thinker_final_architecture_validation (1).ipynb` first:
+Validated in `notebooks/architecture_validation.ipynb` first:
 one general conversational agent can behave like ChatGPT, use research/document
 tools when needed, and mutate the persistent idea/decision/plan board **only when
 appropriate** -- without an intent classifier and without a hand-wired LangGraph
@@ -440,7 +440,7 @@ not the removed live deep-research pass. The Tavily option for `web_search`
 ## Milestone 12: prompt parity + page-tracked document citations
 
 Bring the two remaining repo/notebook gaps into line with
-`notebooks/thinker_final_architecture_validation (1).ipynb`.
+`notebooks/architecture_validation.ipynb`.
 
 - `prompts/lead_partner.v10.yaml`: the `template` now renders byte-identical to
   the notebook's `SYSTEM_PROMPT` (restores the `PROJECT CONTEXT` +

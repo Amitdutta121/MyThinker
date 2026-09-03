@@ -115,9 +115,7 @@ def delete_document(store: SqliteStore, project_id: str, document_id: str) -> No
     store.delete((project_id, "document"), document_id)
 
 
-def delete_documents(
-    store: SqliteStore, project_id: str, document_ids: Iterable[str]
-) -> None:
+def delete_documents(store: SqliteStore, project_id: str, document_ids: Iterable[str]) -> None:
     """Remove several documents and their chunks. Unknown ids are skipped."""
 
     for document_id in document_ids:

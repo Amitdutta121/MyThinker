@@ -31,7 +31,7 @@ useful branches, and finish with a decision or next experiment.
 
 ## Codex execution rules
 
-- Treat [docs/IMPLEMENTATION_PLAN.md](D:/MyThinking/docs/IMPLEMENTATION_PLAN.md)
+- Treat [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)
   as the milestone source of truth.
 - Implement with a lead-agent plus subagent pattern, not free-form parallel
   coding.
@@ -39,7 +39,7 @@ useful branches, and finish with a decision or next experiment.
 - Prefer one active milestone or milestone slice per session.
 - Update docs when interfaces, milestones, or prompt contracts change.
 - Leave a clear handoff using
-  [docs/SESSION_HANDOFF_TEMPLATE.md](D:/MyThinking/docs/SESSION_HANDOFF_TEMPLATE.md)
+  [docs/SESSION_HANDOFF_TEMPLATE.md](docs/SESSION_HANDOFF_TEMPLATE.md)
   when a session ends.
 
 ## Quality rules
