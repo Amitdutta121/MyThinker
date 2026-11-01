@@ -1,5 +1,7 @@
 # MyThinking
 
+![MyThinking: a thinking partner that won't decide for you](docs/assets/banner.png)
+
 MyThinking is an LLM thinking partner for working an idea through to a decision.
 It keeps a project board for each idea: the goal (the "North Star"), the
 alternatives you've considered, the decisions you've made, the evidence behind

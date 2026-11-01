@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320">
+  <rect width="1280" height="320" fill="#100f0e"/>
+  <g font-family="Segoe UI, -apple-system, Helvetica Neue, Arial, sans-serif">
+    <text x="80" y="150" font-size="76" font-weight="600" fill="#ecebe8">MyThinking</text>
+    <text x="82" y="212" font-size="34" fill="#b0aca4">A thinking partner that won't decide for you.</text>
+  </g>
+  <g font-family="Consolas, Menlo, monospace" font-size="20" fill="#d9a35b">
+    <text x="82" y="266">BLOCKED: this turn does not explicitly authorize committing the proposal.</text>
+  </g>
+</svg>
