@@ -1,228 +1,191 @@
-<div align="center">
-
-<img src="docs/assets/logo.svg" alt="MyThinking logo" width="96">
-
 # MyThinking
 
-### A stateful AI thinking partner that takes a raw idea to a decision.
+MyThinking is an LLM thinking partner for working an idea through to a decision.
+It keeps a project board for each idea: the goal (the "North Star"), the
+alternatives you've considered, the decisions you've made, the evidence behind
+them, and a short plan of next actions. The board lives in local SQLite, so you
+can come back to a project days later and pick up where you left off.
 
-<a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-<img alt="Python 3.11 – 3.13" src="https://img.shields.io/badge/python-3.11%20%E2%80%93%203.13-3776AB?logo=python&logoColor=white">
-<a href="https://langchain-ai.github.io/langgraph/"><img alt="Built on LangGraph" src="https://img.shields.io/badge/built%20on-LangGraph-1C3C3C"></a>
-<a href="https://docs.astral.sh/uv/"><img alt="uv" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json"></a>
-<a href="https://github.com/astral-sh/ruff"><img alt="Ruff" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
+It is a single LangGraph agent with 18 tools. There's no router or
+intent classifier; the model decides which tool a turn needs. The rules that keep
+the board consistent are checked in Python inside the tools, not left to the
+prompt. If the model tries to commit a direction you never agreed to, the tool
+refuses:
 
-[Quickstart](#quickstart) · [How it works](#how-it-works) · [Evals](#behavioral-evals) · [HTTP API](#http-api) · [Contributing](#contributing)
+```text
+commit_proposed_direction -> "BLOCKED: this turn does not explicitly authorize
+committing the proposal. Present it and ask the user to confirm."
+```
 
-</div>
+The agent sees that message as the tool result and has to ask you instead.
 
----
+Status: a research prototype I use myself. Single user, local only, no auth.
 
-MyThinking helps you take a raw idea and work it through to a decision or a next
-experiment. It clarifies the goal, surfaces assumptions and gaps, explores
-alternatives, gathers evidence, and keeps the through-line in view. Every project
-is remembered across sessions.
+## Install
 
-It is **one conversational agent with a small set of sharp tools**, not a pipeline
-of bots. It answers ordinary questions directly and reaches for a tool only when
-the work calls for one. Tool selection *is* the router: there is no intent
-classifier and no hand-wired workflow graph.
-
-- 🧭 **Persistent project board.** North Star, branches, decisions, evidence, and a
-  plan, stored in local SQLite and resumable across sessions.
-- 🔒 **Correctness in code, not prompts.** Every board-mutating tool checks a hard
-  precondition and fails safe with `BLOCKED: …`.
-- 🔎 **Agentic research.** Web search, page fetch, and PDF ingestion with
-  verbatim citation tags. Sources only become evidence when saved explicitly.
-- 🖥️ **CLI, HTTP API, and web UI.** A streaming FastAPI server and a Next.js
-  workspace.
-- 🧪 **Behavioral evals.** 63 cases with deterministic trace checks plus
-  LLM-judged expectations. Also published as a Hugging Face dataset.
-
-## Quickstart
-
-**Requirements:** Python 3.11+, [uv](https://docs.astral.sh/uv/), and an
-[OpenRouter API key](https://openrouter.ai/settings/keys).
+You need Python 3.11–3.13, [uv](https://docs.astral.sh/uv/), and an
+[OpenRouter](https://openrouter.ai/settings/keys) API key.
 
 ```bash
 git clone https://github.com/Amitdutta121/MyThinker.git
 cd MyThinker
 uv sync
-cp .env.example .env          # PowerShell: Copy-Item .env.example .env
+cp .env.example .env   # then set OPENROUTER_API_KEY
+uv run mythinking init
 ```
 
-Set `OPENROUTER_API_KEY` in `.env`, then:
+## Usage
 
 ```bash
-uv run mythinking init        # create local storage
-uv run mythinking status      # check configuration (no API call)
-uv run mythinking chat "Help me think through a product idea."
+uv run mythinking chat "I want to build an onboarding tool for restaurant staff."
+uv run mythinking chat --last "What are the alternatives to video lessons?"
+uv run mythinking chat --project-id <id> "Go with the checklist approach."
+uv run mythinking list         # recent projects
+uv run mythinking show <id>    # board summary for one project
 ```
 
-Continue a project later:
+Each `chat` call prints the project ID, the current mode (capture, clarify,
+explore, research, converge, decide, ...) and the reply.
 
-```bash
-uv run mythinking chat --last "Continue where I left off."
-uv run mythinking chat --project-id <id> "Here is more context."
-uv run mythinking list                 # recent projects
-uv run mythinking show <id>            # session summary
-```
+The model defaults to OpenRouter's `~openai/gpt-latest`. Set `OPENROUTER_MODEL`
+to any slug from the [OpenRouter catalog](https://openrouter.ai/models) to pin
+one. `uv run mythinking status` prints the active configuration without making
+a request; `uv run mythinking smoke-model` makes one small live request.
 
-The default model is OpenRouter's `~openai/gpt-latest` alias. Set
-`OPENROUTER_MODEL` to any `provider/model` slug from the
-[OpenRouter catalog](https://openrouter.ai/models) to pin a model.
-
-### Web UI
-
-```bash
-uv run mythinking serve                # API on 127.0.0.1:8000
-cd frontend && npm install && npm run dev
-```
-
-The UI talks to `http://127.0.0.1:8000` by default. Override it with
-`NEXT_PUBLIC_API_BASE_URL` (see `frontend/.env.local.example`).
+There is also a web UI (Next.js) and an HTTP API, described below.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    U([You]) --> A[Thinker agent]
-    A -->|answers directly| U
-    A -->|calls when needed| T{{Tools<br/>hard preconditions}}
-    T -->|"BLOCKED: …"| A
-    T -->|mutates| B[(Project board<br/>SQLite)]
-    B -->|context each turn| A
-```
+On each turn the runtime loads the project board, runs the agent, saves whatever
+the tools changed, and returns the reply. The agent can answer without calling
+any tool, and most ordinary questions are answered that way.
 
-Most agent systems are a maze of sub-agents passing messages. MyThinking makes
-the opposite bet: one agent, a few sharp tools, and correctness pushed into
-deterministic code rather than left to the model's judgement.
+The tools that change the board each check a precondition first:
 
-| Rule | Enforced by |
+| Rule | Checked in |
 | --- | --- |
-| A **North Star** must exist before exploration begins | `explore_ideas`, `converge_ideas` |
-| Convergence writes a **proposal**, never a commitment | `converge_ideas` |
-| A commit copies the **exact proposal**, only on explicit user authorization | `commit_proposed_direction` |
-| Planning requires a **committed direction** | `create_or_revise_plan` |
-| Source material is **never auto-promoted** to evidence | `save_evidence` (source-support + relevance check) |
-| User-added plan steps **survive re-planning** and direction changes | `create_or_revise_plan` |
+| Exploring alternatives needs a North Star | `explore_ideas`, `converge_ideas` |
+| Converging produces a proposal, not a commitment | `converge_ideas` |
+| Committing copies the exact proposal, and only if the user's message authorizes it | `commit_proposed_direction` |
+| Planning needs a committed direction | `create_or_revise_plan` |
+| A web page or PDF only becomes evidence if the source supports the claim and it's relevant to the project | `save_evidence` |
+| Plan steps you added yourself survive re-planning | `create_or_revise_plan` |
 
-Framing, exploring, converging, and planning are **structured-output engines**
-invoked *inside* those tools, not separate agents in a conversation. The
-architecture was validated end to end in [`notebooks/`](notebooks/) before the
-single-agent pivot.
+Framing, exploring, converging, and planning each call a structured-output
+model inside the tool (`src/mythinking/agents/`). They aren't separate agents
+talking to each other. An earlier multi-agent version is in
+[`notebooks/architecture_validation.ipynb`](notebooks/architecture_validation.ipynb);
+I moved to a single agent after it.
 
-Each turn: load board → run the agent (tools enforce preconditions and mutate the
-board) → derive display mode → persist → return an `AssistantTurn`.
+The full tool list:
 
-### Tools
+- Board changes: `set_north_star`, `explore_ideas`, `converge_ideas`,
+  `commit_proposed_direction`, `record_user_decision`, `create_or_revise_plan`,
+  `park_branch`, `save_evidence`
+- Read-only lookups: `get_project_snapshot`, `get_evidence_ledger`,
+  `get_open_research_tasks`, `get_branch_alternatives`, `get_next_actions_plan`
+- Documents: `ingest_pdf`, `list_indexed_documents`, `search_documents`
+- Web: `web_search`, `fetch_url`
 
-| Group | Tools |
-| --- | --- |
-| **Thinking** (mutate the board, precondition-gated) | `set_north_star` · `explore_ideas` · `converge_ideas` · `commit_proposed_direction` · `record_user_decision` · `create_or_revise_plan` · `park_branch` · `save_evidence` |
-| **Lookups** (read-only, pulled on demand) | `get_project_snapshot` · `get_evidence_ledger` · `get_open_research_tasks` · `get_branch_alternatives` · `get_next_actions_plan` |
-| **Documents** | `ingest_pdf` · `list_indexed_documents` · `search_documents` |
-| **Web** | `web_search` · `fetch_url` |
+### Research and citations
 
-### Research and evidence
+`web_search` uses DuckDuckGo by default (no key). Set
+`MYTHINKING_RESEARCH_RETRIEVER=tavily` and `TAVILY_API_KEY` to use Tavily.
+`search_documents` returns passages tagged `[[file.pdf p.3]]` or `[[Page title]]`,
+and the system prompt requires the agent to keep those tags in its answer.
 
-The agent always has `web_search` and `fetch_url` and decides for itself when it
-needs them. Fetched pages and ingested PDFs are **source material**. They become
-project evidence only through an explicit `save_evidence` call that passes a
-source-support and project-relevance check. `search_documents` returns passages
-under citation tags (`[[file.pdf p.3]]`, `[[Title]]`), and the system prompt
-requires those tags verbatim in document-grounded answers.
+Once a project gets large (more than `MYTHINKING_CONTEXT_RETRIEVAL_THRESHOLD`
+items, default 20), the board is retrieved by embedding search instead of being
+pasted into the prompt whole. Embeddings go through the same OpenRouter key
+(`MYTHINKING_EMBEDDING_MODEL`, default `openai/text-embedding-3-small`).
 
-`web_search` uses keyless DuckDuckGo by default. Set
-`MYTHINKING_RESEARCH_RETRIEVER=tavily` and `TAVILY_API_KEY` to use Tavily instead.
+### Storage
 
-<details>
-<summary><b>Configuration reference</b></summary>
+Everything is under `data/` (`MYTHINKING_DATA_DIR`):
 
-All settings live in `.env` (see [`.env.example`](.env.example)).
+- `state.sqlite`: the project boards
+- `checkpoints.sqlite`: chat history, one LangGraph thread per project
+- `store.sqlite`: fetched pages and ingested PDFs
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OPENROUTER_API_KEY` | — | Required for any model call |
-| `OPENROUTER_MODEL` | `~openai/gpt-latest` | Chat model slug |
-| `MYTHINKING_DATA_DIR` | `data` | Where the SQLite stores live |
-| `MYTHINKING_RESEARCH_RETRIEVER` | DuckDuckGo | Set to `tavily` (with `TAVILY_API_KEY`) |
-| `MYTHINKING_EMBEDDING_MODEL` | `openai/text-embedding-3-small` | Retrieval embeddings, via the same OpenRouter key |
-| `MYTHINKING_CONTEXT_RETRIEVAL_THRESHOLD` | `20` | Board size above which project state is retrieved, not inlined |
-| `MYTHINKING_ENABLE_PROFILE_EXTRACTION` | off | Cross-project profile (role, expertise, working style; never sensitive details). Inspect with `uv run mythinking profile` |
-| `MYTHINKING_MLFLOW_*` | off | Optional tracing. Needs `uv sync --group observability` |
+### Optional settings
 
-Storage: chat threads in `data/checkpoints.sqlite`, the board in
-`data/state.sqlite`, fetched and ingested documents in `data/store.sqlite`.
+- `MYTHINKING_ENABLE_PROFILE_EXTRACTION=true` keeps a small cross-project
+  profile (role, expertise, working style). It's off by default and skips
+  sensitive details. View it with `uv run mythinking profile`.
+- MLflow tracing: `uv sync --group observability`, then set the
+  `MYTHINKING_MLFLOW_*` variables in `.env`.
 
-</details>
+See [`.env.example`](.env.example) for the full list.
 
-## HTTP API
+## Web UI and HTTP API
 
 ```bash
-uv run mythinking serve       # binds 127.0.0.1:8000
+uv run mythinking serve                     # API on 127.0.0.1:8000
+cd frontend && npm install && npm run dev   # UI on localhost:3000
 ```
 
-`POST /turns/stream` emits one Server-Sent Event per tool the agent runs
-(`{"type": "node", "node": "<tool>"}`), then a final `{"type": "turn", ...}`. A
-failure mid-stream arrives as a terminal `{"type": "error", ...}` event, not a
-dropped connection.
+The UI only talks to the API over HTTP. Point it elsewhere with
+`NEXT_PUBLIC_API_BASE_URL`.
+
+`POST /turns/stream` sends one server-sent event per tool call
+(`{"type": "node", "node": "explore_ideas"}`) and then the finished turn
+(`{"type": "turn", ...}`). Errors after the stream starts arrive as a final
+`{"type": "error", ...}` event.
 
 <details>
-<summary><b>Endpoint reference</b></summary>
+<summary>All endpoints</summary>
 
 ```text
-GET    /health                                   liveness check
+GET    /health
 POST   /turns                                    {"message": "...", "project_id": "..."} -> AssistantTurn
-POST   /turns/stream                             same body -> text/event-stream of TurnStreamEvent frames
-GET    /projects?limit=20                        recent project summaries, newest first
+POST   /turns/stream                             same body -> text/event-stream
+GET    /projects?limit=20                        recent projects, newest first
 GET    /projects/{project_id}                    full ProjectState
-GET    /projects/{project_id}/documents          indexed documents for a project
+GET    /projects/{project_id}/documents          indexed documents
 
-# Direct edits (no agent turn). Each returns the updated ProjectState;
-# KeyError -> 404, ValueError -> 400.
+# Direct edits, no agent turn. Each returns the updated ProjectState.
 PATCH  /projects/{id}/north-star                 {"title": "..."}
 POST   /projects/{id}/decisions                  {"choice": "...", "question?": "...", "rationale?": "...", "reversible?": true}
-PATCH  /projects/{id}/decisions/{decision_id}    partial of the same fields
+PATCH  /projects/{id}/decisions/{decision_id}
 DELETE /projects/{id}/decisions/{decision_id}
-POST   /projects/{id}/proposal/approve           commit the pending proposal verbatim
-DELETE /projects/{id}/proposal                   dismiss the pending proposal
-POST   /projects/{id}/next-actions               {"description": "...", "time_box_minutes?": 30}  (origin="user")
-PATCH  /projects/{id}/next-actions/{action_id}   partial; also toggles completed
+POST   /projects/{id}/proposal/approve           commit the pending proposal as-is
+DELETE /projects/{id}/proposal
+POST   /projects/{id}/next-actions               {"description": "...", "time_box_minutes?": 30}
+PATCH  /projects/{id}/next-actions/{action_id}
 DELETE /projects/{id}/next-actions/{action_id}
 ```
 
-CORS is open for the local Next.js dev server (`localhost` / `127.0.0.1`, ports
-`3000` and `3001`).
+CORS allows `localhost` and `127.0.0.1` on ports 3000 and 3001.
 
 </details>
 
-## Behavioral evals
+## Evals
 
-[`evals/cases.jsonl`](evals/cases.jsonl) holds **63 cases across 15 categories**,
-including state integrity, convergence quality, unsupported invention, framing,
-branch navigation, and scoped research. Each case gives one or more user turns,
-optional seeded project state, deterministic `check`s on the tool trace and board
-delta, and natural-language `expectations` for an LLM judge. The full schema is
-documented at the top of [`evals/runner.py`](evals/runner.py).
+[`evals/cases.jsonl`](evals/cases.jsonl) has 63 hand-written cases in 15
+categories. A case is one or more user messages, optionally a pre-seeded board,
+and two kinds of checks:
 
-> [!WARNING]
-> The runner makes **live model calls**. Run it deliberately, not in CI.
-> `uv run pytest` only validates the case file, offline.
+- deterministic checks on the tool calls and the board diff, e.g.
+  `{"tools_include": ["converge_ideas"], "tools_exclude": ["commit_proposed_direction"]}`
+- plain-language expectations scored by an LLM judge, e.g.
+  "Does not create a plan from an uncommitted proposal"
+
+The runner calls the live model, so it costs money and isn't run in CI.
+`uv run pytest` only checks that the case file is well-formed.
 
 ```bash
-uv run python evals/runner.py                   # tool trace + deterministic checks
-uv run python evals/runner.py --judge           # + LLM-judged expectations
-uv run python evals/runner.py --only commit-exact-proposal,journey-end-to-end
+uv run python evals/runner.py                  # deterministic checks only
+uv run python evals/runner.py --judge          # also score expectations
+uv run python evals/runner.py --only commit-exact-proposal
 ```
 
-The runner exits non-zero if any deterministic check fails.
-
-**On Hugging Face.** The cases are also published as a dataset
-([`amitdutta121/mythinking-evals`](https://huggingface.co/datasets/amitdutta121/mythinking-evals)). To rebuild and push it:
+The case schema is documented at the top of [`evals/runner.py`](evals/runner.py).
+The cases are also on Hugging Face as
+[`amitdutta121/mythinking-evals`](https://huggingface.co/datasets/amitdutta121/mythinking-evals).
+To regenerate and upload:
 
 ```bash
-uv run python evals/export_hf.py                       # -> dist/hf-dataset/
+uv run python evals/export_hf.py   # writes dist/hf-dataset/
 hf upload amitdutta121/mythinking-evals dist/hf-dataset --repo-type dataset
 ```
 
@@ -231,60 +194,24 @@ hf upload amitdutta121/mythinking-evals dist/hf-dataset --repo-type dataset
 ```bash
 uv run ruff format .
 uv run ruff check .
-uv run pytest                 # fully offline; no API key needed
+uv run pytest        # offline, no API key needed
 ```
 
-<details>
-<summary><b>Project layout</b></summary>
+Frontend: `npm run typecheck` and `npm run test` in `frontend/`.
 
-```text
-src/mythinking/
-  config.py       Environment and OpenRouter settings
-  llm.py          The only model-construction boundary
-  state.py        Typed thinking and project state (Pydantic)
-  persistence.py  Project snapshots and LangGraph checkpoints
-  documents.py    Full-text research documents and chunks (page-tracked for PDFs)
-  retrieval.py    Typed wrapper around LangGraph's SqliteStore for semantic search
-  context.py      Scoped context formatting and threshold-based retrieval
-  gates.py        North Star / decision / evidence structured-output gates
-  board.py        Mutable state holder, mode derivation, plan staleness, frame merge
-  exploration.py  Explore/converge merge and formatting service
-  planning.py     Next-action planning merge/formatting service
-  evidence.py     Evidence ledger merge and citation rendering
-  research.py     Research-task matching and scoped evidence-import pipeline
-  profile.py      User-profile merge and prompt rendering
-  tools.py        The agent's tools: precondition-gated thinking tools,
-                  read-only lookups, document tools, and web tools
-  agents/         Specialist structured-output engines invoked inside tools
-  agent.py        The single create_agent loop + context-injection middleware
-  runtime.py      Turn orchestration and persistence
-  prompts.py      Versioned prompt registry
-  ingest.py       File upload / ingestion
-  observability.py Optional MLflow tracing (lazy import)
-  summary.py      Deterministic, offline session summary rendering
-  api.py          HTTP API over the runtime (non-streaming + SSE)
-  cli.py          init, status, smoke-model, chat, list, show, profile, serve
-prompts/          Versioned prompt specifications (YAML)
-evals/            Behavioral eval cases, live runner, and HF dataset export
-tests/            Deterministic unit tests
-frontend/         Next.js / TypeScript workspace UI (HTTP-only)
-docs/             Design notes and the implementation plan
-```
-
-</details>
+The code is in `src/mythinking/`. `agent.py` builds the agent, `tools.py`
+holds the tools and their preconditions, `runtime.py` runs a turn and saves it,
+and `state.py` defines the board. Prompts are versioned YAML files in
+`prompts/`. [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) records
+the milestones and design decisions.
 
 ## Contributing
 
-Issues, discussion, and PRs are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md)
-and [`AGENTS.md`](AGENTS.md) first. The two rules that matter most:
-
-- **Do not reintroduce a multi-agent graph or an intent classifier.**
-- **Keep board-mutation correctness in deterministic tool preconditions**, not in
-  prompt text.
-
-Every behavior change ships with tests. Every behavioral prompt instruction needs
-an evidence entry or a `product_hypothesis` label, plus an eval case.
+Issues and PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`AGENTS.md`](AGENTS.md). Two constraints I'd like to keep: no multi-agent graph
+or intent classifier, and board rules enforced in tool code rather than in
+prompts. Behavior changes need tests, and prompt changes need an eval case.
 
 ## License
 
-[MIT](LICENSE) © Amit Dutta
+MIT

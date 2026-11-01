@@ -1,14 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
   <rect width="1280" height="640" fill="#100f0e"/>
-  <g transform="translate(120 200)">
-    <rect width="240" height="240" rx="52" fill="#1a1917" stroke="#34312e" stroke-width="2"/>
-    <circle cx="120" cy="120" r="52" fill="none" stroke="#8ba3cf" stroke-width="15"/>
-    <circle cx="120" cy="120" r="19" fill="#8ba3cf"/>
+  <g transform="translate(120 240)">
+    <circle cx="80" cy="80" r="62" fill="none" stroke="#8ba3cf" stroke-width="16"/>
+    <circle cx="80" cy="80" r="22" fill="#8ba3cf"/>
   </g>
   <g font-family="Segoe UI, -apple-system, Helvetica Neue, Arial, sans-serif">
-    <text x="430" y="300" font-size="96" font-weight="600" fill="#ecebe8" letter-spacing="-2">MyThinking</text>
-    <text x="434" y="368" font-size="34" fill="#b0aca4">A stateful AI thinking partner that takes</text>
-    <text x="434" y="412" font-size="34" fill="#b0aca4">a raw idea to a decision.</text>
-    <text x="434" y="486" font-size="24" fill="#8ba3cf" font-family="Consolas, Menlo, monospace">one agent · gated tools · persistent board</text>
+    <text x="360" y="320" font-size="88" font-weight="600" fill="#ecebe8">MyThinking</text>
+    <text x="364" y="384" font-size="32" fill="#b0aca4">An LLM thinking partner with a persistent project board</text>
   </g>
 </svg>

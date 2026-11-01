@@ -34,5 +34,5 @@ def test_export_has_flat_stable_schema_and_round_trips(tmp_path: Path) -> None:
     card = (tmp_path / "README.md").read_text(encoding="utf-8")
     assert card.startswith("---\n")
     assert "path: data/test.jsonl" in card
-    assert f"| {len(source)} | " in card
+    assert f"There are {len(source)} cases" in card
     assert "amitdutta121/mythinking-evals" in card

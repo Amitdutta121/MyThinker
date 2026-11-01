@@ -22,7 +22,6 @@ CASES_PATH = Path(__file__).with_name("cases.jsonl")
 DEFAULT_OUT = Path(__file__).parents[1] / "dist" / "hf-dataset"
 DEFAULT_REPO_ID = "amitdutta121/mythinking-evals"
 GITHUB_URL = "https://github.com/Amitdutta121/MyThinker"
-LOGO_URL = "https://raw.githubusercontent.com/Amitdutta121/MyThinker/main/docs/assets/logo.svg"
 JSON_FIELDS = ("turns", "setup", "check", "check_turns")
 
 CATEGORY_NOTES = {
@@ -94,55 +93,52 @@ configs:
     path: data/test.jsonl
 ---
 
-<img src="{LOGO_URL}" alt="MyThinking logo" width="72">
-
 # Dataset Card for MyThinking Behavioral Evals
 
-Behavioral test cases for a stateful, tool-using LLM agent. Each case checks
-**what the agent does**: which tools it calls, in what order, and how its
-persistent project state changes. It also checks **how it responds**, through
-natural-language expectations scored by an LLM judge.
+Test cases for [MyThinking]({GITHUB_URL}), an LLM agent that keeps a project
+board (goal, alternatives, decisions, evidence, plan) and changes it through
+tools. Each case is one or more user messages plus checks on what the agent
+should do: which tools it calls, how the board changes, and what the reply
+should contain.
 
-| Cases | Judged expectations | With deterministic checks | Multi-turn | With seed documents |
-| :---: | :---: | :---: | :---: | :---: |
-| {len(rows)} | {n_expect} | {n_checked} | {n_multi} | {n_docs} |
+There are {len(rows)} cases with {n_expect} judged expectations in total.
+{n_checked} cases also have deterministic checks, {n_multi} are multi-turn, and
+{n_docs} come with seed documents for retrieval.
 
 ## Dataset Details
 
 ### Dataset Description
 
-The cases were written for [MyThinking]({GITHUB_URL}), a single-agent "thinking
-partner" that keeps a persistent project board (North Star, branches, decisions,
-evidence, next-action plan). Every board-mutating tool has a hard precondition.
-The cases probe whether the agent calls the right tool at the right time, refuses
-to mutate state when it shouldn't, keeps sources separate from evidence, and
-resists prompt injection from documents.
+The agent's board-changing tools check preconditions in code; for example,
+`commit_proposed_direction` refuses unless the user's message approves the
+proposal. Most cases test those boundaries: does the agent call the right tool,
+leave the board alone when it should, keep fetched pages out of the evidence
+ledger until they're saved properly, and ignore instructions embedded in
+documents.
 
-- **Curated by:** Amit Dutta
-- **Language:** English
-- **License:** MIT
+- Curated by: Amit Dutta
+- Language: English
+- License: MIT
 
 ### Dataset Sources
 
-- **Repository:** {GITHUB_URL}
-- **Runner and full check schema:** [`evals/runner.py`]({GITHUB_URL}/blob/main/evals/runner.py)
+- Repository: {GITHUB_URL}
+- Runner and check schema: [`evals/runner.py`]({GITHUB_URL}/blob/main/evals/runner.py)
 
 ## Uses
 
 ### Direct Use
 
-- Regression-test MyThinking across models or prompt versions with
-  `uv run python evals/runner.py --judge`.
-- Use the judged `expectations` as a rubric for other stateful, tool-using
-  agents: framing, convergence, research scoping, and refusing state changes.
+Regression testing MyThinking across models and prompt versions
+(`uv run python evals/runner.py --judge`). The plain-language expectations can
+also be borrowed as a rubric for other agents that keep state between turns.
 
 ### Out-of-Scope Use
 
-- **Not a training set.** With {len(rows)} hand-written cases, it is meant for
-  evaluation only.
-- The deterministic `check` fields assume MyThinking's tool names and board
-  schema, and don't transfer to other agents without remapping.
-- **Not a leaderboard.** This release has no reference model results.
+It's too small for training. The deterministic checks use MyThinking's tool
+names and state fields, so they won't apply to another agent without
+remapping. No model results are published yet, so there is nothing to compare
+against.
 
 ## Dataset Structure
 
@@ -189,35 +185,32 @@ check = json.loads(case["check"]) if case["check"] else {{}}
 
 ### Curation Rationale
 
-Prompt-only agents fail quietly. They commit a direction the user never
-approved, promote a web page to "evidence", or rewrite the plan on an off-topic
-question. These cases pin down those failure modes as concrete, checkable
-behavior so that a prompt or model change can't regress them unnoticed.
+I wrote these while building MyThinking, mostly after seeing the agent do the
+wrong thing: commit a direction nobody approved, save a web page as evidence,
+or rewrite the plan in response to an unrelated question. Each case pins one of
+those behaviors down so a prompt or model change can't quietly bring it back.
 
 ### Source Data
 
-The project author wrote every case by hand while developing MyThinking. Each one
-targets a specific product rule or a failure seen during development. Seed
-documents are short synthetic texts. None of the data comes from real users.
+All cases were written by hand by the project author. Seed documents are short
+made-up texts. Nothing comes from real users.
 
 ### Personal and Sensitive Information
 
-None. User messages and documents are synthetic. The `profile_extraction` and
-`memory_policy` cases use made-up personal details to test that the agent does
-*not* store sensitive information.
+None. The `profile_extraction` and `memory_policy` cases include invented
+personal details on purpose, to check that the agent doesn't store them.
 
 ## Bias, Risks, and Limitations
 
-- **Small and single-author.** Coverage reflects one designer's view of a good
-  thinking partner. Some categories have only one or two cases.
-- **Judge dependence.** `expectations` are scored by an LLM judge, which can
-  disagree with human raters. Prefer the deterministic checks when they exist.
-- **System-specific.** Tool names and state fields are MyThinking's.
+One person wrote all the cases, so coverage follows one view of what a good
+thinking partner does, and several categories have only one or two cases. The
+expectations are scored by an LLM judge, which won't always agree with a human;
+the deterministic checks are more reliable where they exist.
 
 ## More Information
 
-The case file is the source of truth: `evals/cases.jsonl` in the repository.
-This dataset is generated from it by `evals/export_hf.py`.
+`evals/cases.jsonl` in the repository is the source of truth. This dataset is
+generated from it with `evals/export_hf.py`.
 
 ## Dataset Card Contact
 
